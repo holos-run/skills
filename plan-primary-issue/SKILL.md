@@ -34,8 +34,6 @@ Determine the **agent slot number** from the current working directory. Worktree
 ```bash
 SLOT=$(basename "$(pwd)" | sed -n 's/.*agent-\([0-9]\+\).*/agent-\1/p')
 # e.g., /home/jeff/workspace/holos-run/holos-console-agent-1 -> SLOT=agent-1
-HOSTNAME=$(hostname)
-PWD_ABS=$(pwd)
 ```
 
 If `$SLOT` is empty (unusual working directory), fall back to `SLOT="agent-unknown-$(basename "$(pwd)")"`.
@@ -78,8 +76,6 @@ Call `mcp__linear-server__save_comment` with:
   Planning this ticket.
 
   - Agent slot: <SLOT>
-  - Working directory: <PWD_ABS>
-  - Hostname: <HOSTNAME>
   ```
 
 Send real newlines — not `\n` escape sequences.

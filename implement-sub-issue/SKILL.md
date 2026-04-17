@@ -56,8 +56,6 @@ Worktrees are named `holos-console-agent-<N>`. Extract the slot:
 
 ```bash
 SLOT=$(basename "$(pwd)" | sed -n 's/.*agent-\([0-9]\+\).*/agent-\1/p')
-HOSTNAME=$(hostname)
-PWD_ABS=$(pwd)
 ```
 
 If `$SLOT` is empty, fall back to `SLOT="agent-unknown-$(basename "$(pwd)")"`.
@@ -99,17 +97,18 @@ Post a comment announcing which agent is working on this ticket. Call `mcp__line
   Working on this ticket.
 
   - Agent slot: <SLOT>
-  - Working directory: <PWD_ABS>
-  - Hostname: <HOSTNAME>
   - Branch: <branch-name>
   ```
 
 Real newlines — no `\n` escape sequences.
 
-Also move the ticket into the `In Progress` workflow state. Call `mcp__linear-server__save_issue` with:
+Also move the ticket into the `In Progress` workflow state and add the `implementing` label. Ensure the `implementing` label exists for the team; if missing, create it via `mcp__linear-server__create_issue_label` with `name: "implementing"` and `team: "<TEAM_KEY>"`.
+
+Call `mcp__linear-server__save_issue` with:
 
 - `issue: "<TICKET_IDENTIFIER>"`
 - `state: "In Progress"`
+- `labels: ["implementing", ...existing labels]`
 
 If the team does not have a state named exactly `In Progress`, call `mcp__linear-server__list_issue_statuses` with `team: "<TEAM_KEY>"` and pick the `started`-type state.
 
@@ -153,7 +152,7 @@ Run the relevant test commands to verify your implementation:
 
 #### When to run `make test-e2e` locally
 
-Before opening the PR, assess whether your changes warrant a local E2E test run. Use the E2E relevance decision table in the `implement-primary-issue` skill (step 7a) to decide — that table is the single source of truth for which file patterns are E2E-relevant.
+Before opening the PR, assess whether your changes warrant a local E2E test run. Use the E2E relevance decision table in step 12a of this skill to decide — that table is the single source of truth for which file patterns are E2E-relevant.
 
 **Local E2E is optional and best-effort.** Running `make test-e2e` requires `make certs` and a k3d cluster. If the environment does not support E2E, skip the local run and note it in the PR description. Example:
 
@@ -466,7 +465,7 @@ Parse `PR_BODY` for a heading that matches (case-insensitive): `## Deferred Acce
      PR: <PR_URL>
      ```
 
-  4. Record the ticket result as `MERGED_WITH_DEFERRED_ACS` (treat it like an escalation for reporting in step 14 — do not mark it MERGED). Still remove the `planning` label below as usual. Proceed to step 14.
+  4. Record the ticket result as `MERGED_WITH_DEFERRED_ACS` (treat it like an escalation for reporting in step 14 — do not mark it MERGED). Proceed to step 14.
 
 Only if the AC-gate passes (no deferred ACs) do the following:
 
@@ -476,10 +475,6 @@ Move the Linear ticket to `Done` (belt-and-suspenders — the `Fixes` magic word
 - `state: "Done"`
 
 If the team does not have a state named exactly `Done`, use `mcp__linear-server__list_issue_statuses` with `team: "<TEAM_KEY>"` and pick the `completed`-type state.
-
-Regardless of gate outcome, remove the `planning` label if the ticket still has it (the plan-primary-issue skill adds it; it should be gone once work is either done or handed off to a human):
-
-Call `mcp__linear-server__save_issue` with `issue: "<TICKET_IDENTIFIER>"` and `labels: [...existing labels minus "planning"]`.
 
 ### 14. Post Summary Comment on the Ticket
 
