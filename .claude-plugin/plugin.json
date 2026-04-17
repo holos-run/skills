@@ -1,0 +1,10 @@
+{
+  "name": "linear-workflow",
+  "version": "1.0.0",
+  "description": "Tight orchestration loop for plan, implement, and review when developing with GitHub + Linear + Slack.",
+  "author": {
+    "name": "Jeff McCune"
+  },
+  "repository": "https://github.com/jeffmccune/skills",
+  "license": "MIT"
+}
