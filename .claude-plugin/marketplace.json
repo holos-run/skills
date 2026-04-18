@@ -1,0 +1,34 @@
+{
+  "name": "holos-run",
+  "owner": {
+    "name": "holos-run",
+    "email": "support@holos.run"
+  },
+  "metadata": {
+    "description": "Claude Code plugins from holos-run. Currently ships the linear-workflow plugin for Linear + Cyrus orchestration.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "linear-workflow",
+      "source": "./.",
+      "description": "Plan and implement Linear tickets end-to-end with Cyrus: phased plan on a parent ticket, then drive each sub-ticket through branch, PR, review, CI, and merge.",
+      "version": "1.0.0",
+      "author": {
+        "name": "holos-run"
+      },
+      "homepage": "https://github.com/holos-run/skills",
+      "repository": "https://github.com/holos-run/skills",
+      "license": "MIT",
+      "category": "workflow",
+      "keywords": [
+        "linear",
+        "cyrus",
+        "github",
+        "planning",
+        "implementation",
+        "code-review"
+      ]
+    }
+  ]
+}

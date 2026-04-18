@@ -5,6 +5,15 @@
   "author": {
     "name": "Jeff McCune"
   },
-  "repository": "https://github.com/jeffmccune/skills",
-  "license": "MIT"
+  "homepage": "https://github.com/holos-run/skills",
+  "repository": "https://github.com/holos-run/skills",
+  "license": "MIT",
+  "keywords": [
+    "linear",
+    "cyrus",
+    "github",
+    "planning",
+    "implementation",
+    "code-review"
+  ]
 }
