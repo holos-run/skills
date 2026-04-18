@@ -268,7 +268,7 @@ Otherwise (children remain in `started` due to deferred ACs or escalation), leav
 ## Prerequisites
 
 - **Claude Code**: With Agent tool and Opus model access
-- **Codex CLI**: Required by the `/review-pr` skill (`npm install -g @openai/codex`)
+- **Codex CLI**: Required by the inline code review in `/implement-sub-issue` (`npm install -g @openai/codex`, then `codex login`)
 - **GitHub CLI**: `gh` authenticated with repo access
 - **Linear MCP**: `mcp__linear-server__*` tools authorized in the Claude Code settings
 - **Git**: Clean working directory on `main` branch

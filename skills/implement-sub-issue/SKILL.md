@@ -197,30 +197,170 @@ Use the Linear identifier (e.g., `HOL-525`) — **not** a GitHub issue number. I
 
 **Deferred Acceptance Criteria section (important)**: Include this section **only** if at least one acceptance criterion from the Linear ticket was not fully satisfied by this PR. If every AC is addressed, omit the entire `## Deferred Acceptance Criteria` heading. Presence of this section with any non-empty bullet blocks the automatic `Done` transition in step 13 (AC-gate); the ticket will stay `In Progress` with a `needs-human-review` label so a human can triage the gap. Do not add the heading "just in case" — an empty or placeholder-only deferred section still triggers the gate if the bullets parse as non-empty.
 
-### 10. Review the PR (Round 1)
+### 10. Review the PR with Codex (Round 1)
 
-Run the `/review-pr` skill immediately after opening the PR — do NOT wait for CI checks first. Code review runs in parallel with CI to minimize wall clock time.
+Run a codex-based code review immediately after opening the PR — do NOT wait for CI checks first. Code review runs in parallel with CI to minimize wall clock time.
 
-Detect the PR number first:
+This skill invokes codex directly rather than delegating to a separate review skill, so it works in any repository with this plugin installed without requiring additional plugins.
+
+#### 10a. Preflight
+
+Verify codex is available:
+
+```bash
+if [ -x scripts/check-codex ]; then
+  eval "$(scripts/check-codex)"
+else
+  CODEX=$(command -v codex)
+fi
+"$CODEX" --version 2>&1 || true
+```
+
+If `$CODEX` is empty, install codex (`npm install -g @openai/codex`) and authenticate (`codex login`). If codex still cannot be located, **abort** and escalate via step 11c (`needs-human-review`).
+
+#### 10b. Resolve PR Context and Round Number
 
 ```bash
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 PR_NUMBER=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].number')
+BASE_BRANCH=$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName)
+
+mkdir -p "tmp/review-pr/pr-${PR_NUMBER}"
+ROUND=$(ls "tmp/review-pr/pr-${PR_NUMBER}"/round-*.md 2>/dev/null | wc -l | tr -d ' ')
+ROUND=$((ROUND + 1))
+OUTPUT_FILE="tmp/review-pr/pr-${PR_NUMBER}/round-${ROUND}.md"
 ```
 
-Then invoke the review skill:
+#### 10c. Build the Acceptance Criteria Block
+
+Fetch the Linear ticket body via `mcp__linear-server__get_issue` with `id: "<TICKET_IDENTIFIER>"` so codex can judge whether the PR satisfies the acceptance criteria. Construct:
 
 ```
-/review-pr $PR_NUMBER
+ACCEPTANCE_CRITERIA="=== Acceptance Criteria (from <TICKET_IDENTIFIER>) ===
+<ticket body>
+
+"
 ```
 
-After the review completes, parse the result for:
+If the ticket body is empty, leave `ACCEPTANCE_CRITERIA` empty.
 
-- **Verdict**: APPROVE or REQUEST_CHANGES
-- **Critical count**: Number of `[CRITICAL]` findings
-- **Important count**: Number of `[IMPORTANT]` findings
-- **Style count**: Number of `[STYLE]` findings
+#### 10d. Run Codex Review
+
+```bash
+timeout 300 "$CODEX" exec review \
+  --ephemeral \
+  -o "$OUTPUT_FILE" \
+  "Review this pull request. Run \`git diff ${BASE_BRANCH}...HEAD\` to see the changes.
+
+You are reviewing PR #${PR_NUMBER}. Read AGENTS.md (or CLAUDE.md) in the repo for project conventions before reviewing.
+
+${ACCEPTANCE_CRITERIA}=== Review Checklist ===
+
+Report ONLY violations you actually find in the diff. Do not report passing checks.
+
+--- Critical (must fix before merge) ---
+
+1. Security: hardcoded credentials, secrets, command injection, XSS, SQL injection, insecure defaults, missing input validation at system boundaries.
+2. Reliability: data loss paths, cascading failures, resource leaks, race conditions, nil/null dereferences, off-by-one errors.
+3. Generated code not edited: files under gen/ and frontend/src/gen/ must not be hand-edited.
+
+--- Important (should fix) ---
+
+4. Acceptance criteria: does the PR satisfy the linked ticket's acceptance criteria? Any missed requirements?
+5. Test coverage: new behavior should have tests. Prefer unit tests over E2E where possible.
+6. RED GREEN: tests should define and exercise expected behavior — flag tautological or never-executed tests.
+7. Codegen consistency: if proto/CUE schemas changed, generated code should have corresponding changes.
+8. Error handling: errors propagated, not swallowed.
+
+--- Style (optional) ---
+
+9. UI conventions (semantic CSS tokens, not hardcoded colors where applicable).
+10. Dead code, unused imports, stale comments referencing removed behavior.
+
+--- NOT in scope ---
+
+Do NOT comment on style preferences beyond the list above, comment formatting, naming opinions, or scope creep beyond the ticket's acceptance criteria. This code is unreleased — do not flag breaking changes, removed exports, or renamed APIs as issues.
+
+=== Output Format ===
+
+## Review Summary
+
+**PR**: #${PR_NUMBER}
+**Round**: ${ROUND}
+**Scope**: Branch diff against ${BASE_BRANCH}
+**Verdict**: APPROVE | REQUEST_CHANGES
+
+## Findings
+
+### [CRITICAL] <title>
+- **File**: <path>:<line>
+- **Category**: security | reliability | generated-code
+- **Issue**: <what is wrong>
+- **Fix**: <concrete suggestion>
+
+### [IMPORTANT] <title>
+- **File**: <path>:<line>
+- **Category**: acceptance-criteria | tests | red-green | codegen | error-handling
+- **Issue**: <what is wrong>
+- **Fix**: <concrete suggestion>
+
+### [STYLE] <title>
+- **File**: <path>:<line>
+- **Category**: ui-conventions | dead-code
+- **Issue**: <what is wrong>
+- **Fix**: <concrete suggestion>
+
+If no issues are found, output only:
+
+## Review Summary
+
+**PR**: #${PR_NUMBER}
+**Round**: ${ROUND}
+**Scope**: Branch diff against ${BASE_BRANCH}
+**Verdict**: APPROVE
+
+No issues found. The changes follow project conventions.
+
+IMPORTANT: Be specific and concise. Cite exact file paths and line numbers. Only report actual issues found in the diff."
+```
+
+The `--ephemeral` flag prevents codex from persisting session files. The `-o` flag writes only the final review message to the output file. `timeout 300` caps execution at 5 minutes.
+
+#### 10e. Parse the Results
+
+Read `$OUTPUT_FILE` with the Read tool and extract:
+
+- **Verdict**: search for `**Verdict**: APPROVE` or `**Verdict**: REQUEST_CHANGES`
+- **Critical count**: occurrences of `### [CRITICAL]`
+- **Important count**: occurrences of `### [IMPORTANT]`
+- **Style count**: occurrences of `### [STYLE]`
+
+If the output file is empty or missing, codex failed. Check `codex login status` and network connectivity, then escalate via step 11c (`needs-human-review`).
+
+#### 10f. Post the Review to GitHub
+
+Post the review output to the PR as a persistent audit trail. Choose the event based on severity:
+
+```bash
+EVENT="APPROVE"
+if grep -qE '^### \[(CRITICAL|IMPORTANT)\]' "$OUTPUT_FILE"; then
+  EVENT="REQUEST_CHANGES"
+elif grep -qE '^### \[STYLE\]' "$OUTPUT_FILE"; then
+  EVENT="COMMENT"
+fi
+
+REVIEW_BODY=$(cat "$OUTPUT_FILE")
+gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" \
+  --method POST \
+  --field event="${EVENT}" \
+  --input <(jq -Rn --arg body "$REVIEW_BODY" '{body: $body, event: env.EVENT}') \
+  || gh pr comment "$PR_NUMBER" --body "## Codex Review Round ${ROUND}
+
+$REVIEW_BODY"
+```
+
+If the structured review POST fails, fall back to a plain PR comment so the review output is still visible.
 
 **If APPROVE (no findings):** Skip to step 12 (wait for CI).
 
@@ -253,11 +393,7 @@ After all fixes:
 
 #### 11b. Re-Review (Round 2)
 
-Run the review skill again:
-
-```
-/review-pr $PR_NUMBER
-```
+Repeat the codex review procedure from step 10 (`10a` through `10f`). The round number in step 10b auto-increments based on the number of existing `round-*.md` files in `tmp/review-pr/pr-${PR_NUMBER}/`, so the new output will be written to `round-2.md`.
 
 Parse the result:
 
