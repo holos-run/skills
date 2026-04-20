@@ -66,7 +66,7 @@ The Linear MCP server is reachable over HTTP at `https://mcp.linear.app/mcp`. Wi
 
    ```shell
    claude mcp remove linear-server
-   claude mcp add linear-server -- npx mcp-remote https://mcp.linear.app/mcp --header 'Authorization: Bearer ${LINEAR_API_KEY}'
+   claude mcp add linear-server --scope user -- npx mcp-remote https://mcp.linear.app/mcp --header 'Authorization: Bearer ${LINEAR_API_KEY}'
    ```
 
 ## Repository layout
