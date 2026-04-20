@@ -1,0 +1,14 @@
+{
+  "name": "holos-run",
+  "owner": {
+    "name": "Open Infrastructure Services LLC"
+  },
+  "plugins": [
+    {
+      "name": "linear-workflow",
+      "source": "./plugins/linear-workflow",
+      "description": "Tight orchestration loop for plan, implement, and review when developing with GitHub + Linear + Slack.",
+      "version": "2.0.0"
+    }
+  ]
+}
