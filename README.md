@@ -30,10 +30,11 @@ rather than encoding them in the plugin.
 
 ## Installation
 
-```txt
-claude plugin marketplace add <github url of this repo>
+```bash
+claude plugin marketplace add holos-run/skills
 ```
 ```bash
+claude plugin install linear-workflow@holos-run
 ```
 
 ## Skills
@@ -142,7 +143,8 @@ codex --approval-mode full-auto --full-context \
 ```
 </pre>
 
-This gives you true adversarial review — a separate model (Codex/GPT) reviewing code written by Claude, catching blind spots that self-review misses.
+This gives you true adversarial review — a separate model (Codex/GPT) reviewing
+code written by Claude, catching blind spots that self-review misses.
 
 #### Codex CLI setup
 
@@ -152,12 +154,26 @@ Install:
 npm install -g @openai/codex
 ```
 
-Configure `~/.codex/config.toml` for your LLM provider (e.g., LiteLLM, OpenAI directly, Azure). See the [Codex CLI docs](https://github.com/openai/codex) for provider-specific configuration.
+Configure `~/.codex/config.toml` for your LLM provider (e.g., LiteLLM, OpenAI
+directly, Azure). See the [Codex CLI docs](https://github.com/openai/codex) for
+provider-specific configuration.
 
-Load your API key via `direnv`:
+The following example works with LiteLLM:
 
-```bash
-export LITELLM_API_KEY="$(ks show LITELLM_API_KEY)"
+```toml
+personality = "pragmatic"
+model = "gpt-5.3-codex"
+model_provider = "litellm"
+model_reasoning_effort = "medium"
+
+[notice.model_migrations]
+"gpt-5.3-codex" = "gpt-5.4"
+
+[model_providers.litellm]
+name = "LiteLLM"
+base_url = "https://litellm.example.com/v1"
+env_key = "LITELLM_API_KEY"
+wire_api = "responses"
 ```
 
 ### Example: Claude CLI for self-review
@@ -175,7 +191,8 @@ claude --print "Review the diff of PR #$PR_NUMBER in $REPO. \
 ```
 </pre>
 
-This is less adversarial (same model family reviewing its own code) but still provides structured review output.
+This is less adversarial (same model family reviewing its own code) but still
+provides structured review output.
 
 ### Fallback behavior
 
