@@ -1,7 +1,7 @@
 ---
 name: plan-primary-issue
 description: Create an implementation plan for a Linear ticket. Use this skill when the user provides a Linear ticket (URL or identifier like HOL-525) and wants a plan broken into phases, with each phase tracked as a Linear sub-ticket under the provided parent. Triggers on phrases like "plan this ticket", "plan ticket for", "break this Linear issue into phases", or any request to produce a phased plan against a Linear ticket.
-version: 1.2.0
+version: 1.3.0
 ---
 
 # Plan Ticket
@@ -46,21 +46,23 @@ Record:
 - `TICKET_IDENTIFIER` — e.g., `HOL-525`
 - `TICKET_TITLE`
 - `TEAM_ID` / `TEAM_KEY` — needed to create sub-tickets on the same team
-- `EXISTING_LABELS` — preserved when adding `planning`
+- `EXISTING_LABELS` — preserved when adding `role/planner`, minus any legacy labels consolidated away in step 2
 - `EXISTING_BODY` — preserve or extend; never silently discard prior content
 
 ### 2. Mark the Ticket as Being Planned
 
-Add the `planning` and `role/planner` labels **before exploring the codebase**. The labels are the signal that planning has started — do not post a redundant "Planning this ticket" comment. Cyrus's `routingLabels` matches `role/planner` to this repo's planner prompt (see [README — Multi-agent handoff](../../README.md)).
+Apply the `role/planner` label **before exploring the codebase**. The role label is the signal that planning has started — do not post a redundant "Planning this ticket" comment. Cyrus's `routingLabels` matches `role/planner` to this repo's planner prompt (see [README — Multi-agent handoff](../../README.md)).
 
-For each label (`planning`, `role/planner`), call `mcp__linear-server__list_issue_labels` to find its ID for the ticket's team (prefer team-scoped; fall back to workspace). If missing, create it via `mcp__linear-server__create_issue_label` with `name: "<label>"` and `team: "<TEAM_KEY>"`.
+**Canonical labels are `role/*` only.** As part of this step, consolidate any legacy lifecycle labels on the ticket to the canonical `role/*` form. Specifically, strip `planning`, `plan`, and `implementing` from the label set — they are legacy and duplicate what `role/*` already signals. Never re-apply these labels from any skill.
+
+Call `mcp__linear-server__list_issue_labels` to find the `role/planner` label ID for the ticket's team (prefer team-scoped; fall back to workspace). If missing, create it via `mcp__linear-server__create_issue_label` with `name: "role/planner"` and `team: "<TEAM_KEY>"`.
 
 Then update the issue labels via `mcp__linear-server__save_issue`:
 
 - `issue: "<TICKET_IDENTIFIER>"`
-- `labels: ["planning", "role/planner", ...existing label names]`
+- `labels: ["role/planner", ...existing label names minus "planning", "plan", "implementing", and any prior "role/*" label]`
 
-Preserve every existing label — `save_issue` replaces the full label set on update. Strip any existing `role/*` label before adding `role/planner` so the ticket is only routed to one role at a time.
+Preserve every other existing label — `save_issue` replaces the full label set on update. Strip any existing `role/*` label before adding `role/planner` so the ticket is only routed to one role at a time.
 
 ### 3. Name the Session
 
@@ -234,7 +236,20 @@ mcp__linear-server__save_issue
 
 Ensure the `role/implementer` label exists for the team (create via `mcp__linear-server__create_issue_label` if missing). Prefer the default orchestrator-driven mode unless the user has explicitly asked for parallel phase execution — parallel phases multiply merge-conflict risk on shared files.
 
-### 11. Report to the User
+### 11. Hand Off the Parent Ticket to the Orchestrator
+
+Planning is done. Transition the parent ticket from the planner role to the orchestrator role so the next Cyrus pickup routes to `/implement-primary-issue`. In the same `save_issue` call, consolidate any remaining legacy lifecycle labels so the ticket carries only canonical `role/*` signals.
+
+Ensure the `role/orchestrator` label exists for the team (create via `mcp__linear-server__create_issue_label` with `name: "role/orchestrator"` and `team: "<TEAM_KEY>"` if missing).
+
+Call `mcp__linear-server__save_issue`:
+
+- `issue: "<TICKET_IDENTIFIER>"`
+- `labels: ["role/orchestrator", ...existing label names minus "planning", "plan", "role/planner", "implementing"]`
+
+The resulting label set on the parent must contain `role/orchestrator` and must NOT contain `planning`, `plan`, `role/planner`, or `implementing`. Other non-role labels (team, area, priority, etc.) are preserved.
+
+### 12. Report to the User
 
 After all tickets are created, report a summary:
 
@@ -245,7 +260,9 @@ After all tickets are created, report a summary:
 
 ## Key Principles
 
-- **Planning label first**: Always add the `planning` label *before* exploring the codebase, so operators can see the ticket is owned. The label is the signal — don't post a redundant "Planning this ticket" comment.
+- **`role/*` is canonical**: The four canonical labels are `role/planner`, `role/orchestrator`, `role/implementer`, and `role/maintainer`. Do not apply legacy lifecycle labels (`planning`, `plan`, `implementing`) — strip them from existing tickets to migrate forward. `role/*` labels are the Cyrus routing signal; Linear's native state (`Todo`, `In Progress`, `Done`) covers lifecycle.
+- **Role first, then explore**: Apply `role/planner` to the parent *before* exploring the codebase so operators can see the ticket is owned. The label is the signal — don't post a redundant "Planning this ticket" comment.
+- **Hand off at the end**: Every plan ends by swapping the parent's `role/planner` for `role/orchestrator` so the next Cyrus pickup routes to `/implement-primary-issue`.
 - **Infer before asking**: Try to infer acceptance criteria from the prompt. Only ask for clarification when truly ambiguous.
 - **Proto-first**: When the feature requires new RPC messages, always make proto changes a dedicated first phase.
 - **Backwards compatibility**: Never remove or renumber existing proto fields. Only add new ones.

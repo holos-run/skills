@@ -1,7 +1,7 @@
 ---
 name: implement-sub-issue
 description: Implement a single Linear ticket end-to-end. Use this skill when the user provides a Linear ticket (URL or identifier like HOL-525) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement ticket", "work on this ticket", "fix this ticket", or when given a Linear ticket identifier alone. Handles the full workflow: fetch ticket from Linear, create branch, comment on ticket, implement, open a GitHub PR, run code review, fix findings, wait for CI, merge, and update the Linear ticket. For parent tickets with sub-tickets, use /implement-primary-issue instead.
-version: 1.2.0
+version: 1.3.0
 ---
 
 # Implement Ticket
@@ -110,13 +110,13 @@ Real newlines — no `\n` escape sequences.
 
 This first comment is load-bearing: the `/implement-primary-issue` orchestrator uses its presence within `HANDOFF_ACK_TIMEOUT` to confirm that an agent is actually listening on the role label.
 
-Also move the ticket into the `In Progress` workflow state and add the `implementing` label. Ensure the `implementing` label exists for the team; if missing, create it via `mcp__linear-server__create_issue_label` with `name: "implementing"` and `team: "<TEAM_KEY>"`.
+Also move the ticket into the `In Progress` workflow state. **Canonical labels are `role/*` only** — do not add `implementing`, `planning`, or `plan`, and strip them from the label set if discovered on the ticket so existing Linear issues consolidate forward. Linear's native `In Progress` state already signals lifecycle; the `role/*` label signals who owns the ticket.
 
 Call `mcp__linear-server__save_issue` with:
 
 - `issue: "<TICKET_IDENTIFIER>"`
 - `state: "In Progress"`
-- `labels: ["implementing", ...existing labels]`
+- `labels: [...existing labels minus "implementing", "planning", "plan"]`
 
 Do not strip the ticket's `role/*` label — leave it so the orchestrator can see which role picked the ticket up.
 
@@ -657,6 +657,7 @@ SECONDS=$((ELAPSED % 60))
 
 ## Key Conventions
 
+- **`role/*` is canonical**: The four canonical labels are `role/planner`, `role/orchestrator`, `role/implementer`, and `role/maintainer`. Do not apply or preserve legacy lifecycle labels (`planning`, `plan`, `implementing`) — strip them on discovery so existing Linear tickets consolidate forward. Linear's native `In Progress` / `Done` state covers lifecycle; `role/*` drives Cyrus routing.
 - **No backwards compatibility**: This code is not yet released; breaking changes are fine
 - **RED GREEN**: Write tests before implementation
 - **Regular commits**: Commit logical units as you go, not one giant commit at the end

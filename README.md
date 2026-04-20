@@ -99,8 +99,8 @@ See each skill's `SKILL.md` for the full workflow and triggering phrases.
 
 ### Typical flow
 
-1. **Plan** — `/plan-primary-issue HOL-525` adds a `planning` label to the parent ticket, explores the codebase, writes a master plan into the parent ticket body, and creates one Linear sub-ticket per phase.
-2. **Implement** — `/implement-primary-issue HOL-525` swaps `planning` for `implementing` on the parent, iterates over its Linear children, and dispatches each to `/implement-sub-issue`.
+1. **Plan** — `/plan-primary-issue HOL-525` applies `role/planner` to the parent ticket, explores the codebase, writes a master plan into the parent body, creates one Linear sub-ticket per phase, and finally hands off by swapping `role/planner` for `role/orchestrator` on the parent.
+2. **Implement** — `/implement-primary-issue HOL-525` picks up the parent already carrying `role/orchestrator`, iterates over its Linear children, and hands each off to `/implement-sub-issue` via `role/implementer`.
 3. **Merge** — Each `/implement-sub-issue` invocation handles its sub-ticket end-to-end: branch, PR, cross-model review, CI, merge, and move the Linear ticket to `Done`. Follow-up tickets (things found during review) are created as new Linear sub-tickets under the same parent.
 
 ### How it works with Linear
@@ -108,7 +108,7 @@ See each skill's `SKILL.md` for the full workflow and triggering phrases.
 Linear is the source of truth for tickets. The skills use `mcp__linear-server__*` MCP tools to:
 
 - Fetch tickets (`get_issue`) and discover sub-tickets by `parentId` — not by parsing `[ ]` task lists.
-- Apply lifecycle labels (`planning` → `implementing`) so operators can see which tickets an agent currently owns.
+- Apply canonical `role/*` labels (`role/planner` → `role/orchestrator` → `role/implementer` / `role/maintainer`) so operators can see which role currently owns each ticket. Legacy lifecycle labels (`planning`, `plan`, `implementing`) are consolidated away by the skills on discovery.
 - Post structured comments tagged with the role (and optional `agent=<AGENT_NAME>` when the environment exports one), so you can tell which role handled each handoff.
 - Write the master plan directly into the parent ticket's body and create per-phase sub-tickets with `parentId` set, producing a native Linear parent/child tree.
 - Move tickets to `Done` after merge, as a belt-and-suspenders safeguard alongside the `Fixes HOL-###` magic-word in the PR body.
@@ -133,15 +133,15 @@ The three skills split Linear tickets across **role-specialized Cyrus agents**, 
 | Role | Triggering label | Cyrus prompt mode | Typical `allowedTools` | Applied by |
 |---|---|---|---|---|
 | Planner | `role/planner` | `scoper` | `readOnly` + MCP writes | Human (assigns master ticket) |
-| Orchestrator | `role/orchestrator` | `scoper` or custom | `readOnly` + MCP writes | `/plan-primary-issue` → `/implement-primary-issue` on the master ticket at the start of execution |
+| Orchestrator | `role/orchestrator` | `scoper` or custom | `readOnly` + MCP writes | `/plan-primary-issue` (as its final handoff step on the master ticket) |
 | Implementer | `role/implementer` | `builder` | `all` | `/implement-primary-issue`, one sub-ticket at a time |
 | Maintainer | `role/maintainer` | `builder` | `safe` (no `Bash` beyond allow-list) | `/implement-sub-issue` when creating a follow-up from review |
 
 **Flow.**
 
 1. A human assigns a master ticket to Cyrus (the master ticket has `role/planner` — or the planner skill applies it at entry).
-2. `/plan-primary-issue` writes the plan body, creates phase sub-tickets (unlabeled by default), and exits.
-3. A human re-assigns the master ticket to Cyrus to kick off execution. `/implement-primary-issue` swaps `role/planner` for `role/orchestrator` on the master.
+2. `/plan-primary-issue` writes the plan body, creates phase sub-tickets (unlabeled by default), swaps `role/planner` for `role/orchestrator` on the master as its final step, and exits.
+3. A human re-assigns the master ticket to Cyrus to kick off execution. `/implement-primary-issue` picks it up already carrying `role/orchestrator` and consolidates any legacy lifecycle labels it finds.
 4. For each phase sub-ticket, the orchestrator applies `role/implementer`, then polls Linear (`get_issue` + `list_comments`, every 60s) until the sub-ticket transitions to a completed state, gets `needs-human-review`, or stalls (no activity for 30 minutes).
 5. The implementer Cyrus agent (matched by `routingLabels: ["role/implementer"]`) picks up the labeled sub-ticket, runs `/implement-sub-issue` end-to-end (branch, code, PR, Codex review, CI, merge), and posts a final summary comment.
 6. If the review produced style-only follow-ups, `/implement-sub-issue` creates a follow-up Linear sub-ticket labeled `role/maintainer`. The maintainer Cyrus agent picks those up autonomously — the orchestrator's follow-up sweep polls them but does not reapply any label.
