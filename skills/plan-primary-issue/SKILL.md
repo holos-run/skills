@@ -1,7 +1,7 @@
 ---
 name: plan-primary-issue
 description: Create an implementation plan for a Linear ticket. Use this skill when the user provides a Linear ticket (URL or identifier like HOL-525) and wants a plan broken into phases, with each phase tracked as a Linear sub-ticket under the provided parent. Triggers on phrases like "plan this ticket", "plan ticket for", "break this Linear issue into phases", or any request to produce a phased plan against a Linear ticket.
-version: 1.1.0
+version: 1.2.0
 ---
 
 # Plan Ticket
@@ -20,7 +20,7 @@ Always send real newlines in `body` / `description` values — never literal `\n
 
 ## Workflow
 
-### 1. Resolve the Ticket and Record the Agent Slot
+### 1. Resolve the Ticket
 
 Parse `{{SKILL_INPUT}}` to extract the Linear ticket identifier. Accept either form:
 
@@ -29,14 +29,13 @@ Parse `{{SKILL_INPUT}}` to extract the Linear ticket identifier. Accept either f
 
 Capture the identifier (e.g., `HOL-525`) for use in every subsequent Linear call.
 
-Determine the **agent slot number** from the current working directory. Worktrees are named `holos-console-agent-<N>`:
+The worktree is task-scoped — do **not** try to derive an agent identifier from `$(pwd)`. Read an optional agent name from the environment instead:
 
 ```bash
-SLOT=$(basename "$(pwd)" | sed -n 's/.*agent-\([0-9]\+\).*/agent-\1/p')
-# e.g., /home/jeff/workspace/holos-run/holos-console-agent-1 -> SLOT=agent-1
+AGENT_NAME="${AGENT_NAME:-}"
 ```
 
-If `$SLOT` is empty (unusual working directory), fall back to `SLOT="agent-unknown-$(basename "$(pwd)")"`.
+When `AGENT_NAME` is set, comment tags include `agent=<AGENT_NAME>`; when unset, the tag omits the field. Do not fabricate a slot from the working directory.
 
 Fetch the ticket so you have its title, team, current labels, and current body:
 
@@ -52,9 +51,7 @@ Record:
 
 ### 2. Mark the Ticket as Being Planned
 
-Add the `planning` and `role/planner` labels and announce the agent slot on the ticket **before exploring the codebase**. This way operators can see at a glance which tickets an agent currently owns, and Cyrus's `routingLabels` matches `role/planner` to this repo's planner prompt (see [README — Multi-agent handoff](../../README.md)).
-
-#### 2a. Add the `planning` and `role/planner` labels
+Add the `planning` and `role/planner` labels **before exploring the codebase**. The labels are the signal that planning has started — do not post a redundant "Planning this ticket" comment. Cyrus's `routingLabels` matches `role/planner` to this repo's planner prompt (see [README — Multi-agent handoff](../../README.md)).
 
 For each label (`planning`, `role/planner`), call `mcp__linear-server__list_issue_labels` to find its ID for the ticket's team (prefer team-scoped; fall back to workspace). If missing, create it via `mcp__linear-server__create_issue_label` with `name: "<label>"` and `team: "<TEAM_KEY>"`.
 
@@ -64,21 +61,6 @@ Then update the issue labels via `mcp__linear-server__save_issue`:
 - `labels: ["planning", "role/planner", ...existing label names]`
 
 Preserve every existing label — `save_issue` replaces the full label set on update. Strip any existing `role/*` label before adding `role/planner` so the ticket is only routed to one role at a time.
-
-#### 2b. Post the agent slot comment
-
-Call `mcp__linear-server__save_comment` with:
-
-- `issue: "<TICKET_IDENTIFIER>"`
-- `body`:
-
-  ```
-  Planning this ticket.
-
-  - Agent slot: <SLOT>
-  ```
-
-Send real newlines — not `\n` escape sequences.
 
 ### 3. Name the Session
 
@@ -263,7 +245,7 @@ After all tickets are created, report a summary:
 
 ## Key Principles
 
-- **Planning label first**: Always add the `planning` label and post the agent-slot comment *before* exploring the codebase, so operators can see the ticket is owned.
+- **Planning label first**: Always add the `planning` label *before* exploring the codebase, so operators can see the ticket is owned. The label is the signal — don't post a redundant "Planning this ticket" comment.
 - **Infer before asking**: Try to infer acceptance criteria from the prompt. Only ask for clarification when truly ambiguous.
 - **Proto-first**: When the feature requires new RPC messages, always make proto changes a dedicated first phase.
 - **Backwards compatibility**: Never remove or renumber existing proto fields. Only add new ones.

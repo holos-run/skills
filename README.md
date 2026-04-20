@@ -93,7 +93,7 @@ Three skills cover the full lifecycle of a Linear ticket, from plan to merged PR
 |---|---|
 | `/plan-primary-issue <HOL-###>` | Explore the codebase and turn a Linear ticket into a phased plan. Writes the master plan into the parent ticket's description and creates one Linear sub-ticket per phase (`parentId` set natively). |
 | `/implement-primary-issue <HOL-###>` | Orchestrator. Lists the parent ticket's Linear sub-tickets, dispatches each to `/implement-sub-issue` in order, tracks per-phase wall-clock timing, sweeps for follow-up tickets, and posts a summary. |
-| `/implement-sub-issue <HOL-###>` | End-to-end lifecycle for a single ticket: branch from `origin/main`, comment on the Linear ticket with the agent slot, implement per repo conventions, open a GitHub PR linking back to Linear (`Fixes HOL-###`), run cross-model code review, fix findings, wait for CI, merge, then transition the Linear ticket to `Done`. |
+| `/implement-sub-issue <HOL-###>` | End-to-end lifecycle for a single ticket: branch from `origin/main`, comment on the Linear ticket, implement per repo conventions, open a GitHub PR linking back to Linear (`Fixes HOL-###`), run cross-model code review, fix findings, wait for CI, merge, then transition the Linear ticket to `Done`. |
 
 See each skill's `SKILL.md` for the full workflow and triggering phrases.
 
@@ -109,7 +109,7 @@ Linear is the source of truth for tickets. The skills use `mcp__linear-server__*
 
 - Fetch tickets (`get_issue`) and discover sub-tickets by `parentId` — not by parsing `[ ]` task lists.
 - Apply lifecycle labels (`planning` → `implementing`) so operators can see which tickets an agent currently owns.
-- Post structured comments including the agent slot (e.g. `agent-1`) derived from the worktree path, so you can tell which background agent is working on which ticket.
+- Post structured comments tagged with the role (and optional `agent=<AGENT_NAME>` when the environment exports one), so you can tell which role handled each handoff.
 - Write the master plan directly into the parent ticket's body and create per-phase sub-tickets with `parentId` set, producing a native Linear parent/child tree.
 - Move tickets to `Done` after merge, as a belt-and-suspenders safeguard alongside the `Fixes HOL-###` magic-word in the PR body.
 
@@ -119,9 +119,9 @@ Code still ships through GitHub — the PR is opened with `gh`, reviewed, CI-gat
 
 [Cyrus](https://github.com/ceedaragents/cyrus) is a background agent runner that watches Linear, spins up a Claude Code session in a git worktree for each assigned ticket, and streams the agent's activity back to the Linear ticket as comments. The `linear-workflow` skills are built for this flow:
 
-- **Worktree-aware agent slots.** Cyrus places each session in a worktree named like `holos-console-agent-<N>`. Every skill extracts that slot from `$(pwd)` and includes it in Linear comments so humans can correlate a comment with a specific background agent.
+- **Task-scoped worktrees.** Cyrus places each session in a worktree dedicated to one task (e.g., `~/.cyrus/worktrees/HOL-724`). The skills treat the worktree as task-scoped only — they do not parse the path for an agent slot. If you want comments tagged with a reusable agent identity, export `AGENT_NAME` in the session environment and the skills will include `agent=<AGENT_NAME>` in the comment tag.
 - **One skill per Cyrus role.** Assign a parent (planning) ticket to Cyrus → `/plan-primary-issue` fires. Re-assign that parent to run the plan → `/implement-primary-issue` fires. Assign a single sub-ticket → `/implement-sub-issue` fires. The three skills map cleanly onto the three common Cyrus entry points.
-- **Linear round-trips, not ad-hoc chatter.** Everything meaningful — plan body, phase list, agent slot, merge status, follow-up tickets — lands on the Linear ticket. This keeps Cyrus's Linear-native activity stream the durable record of the work.
+- **Linear round-trips, not ad-hoc chatter.** Everything meaningful — plan body, phase list, role handoffs, merge status, follow-up tickets — lands on the Linear ticket. This keeps Cyrus's Linear-native activity stream the durable record of the work.
 - **Label-based handoff between agents.** `/implement-primary-issue` does not implement sub-tickets in-process. It applies a `role/*` label to each sub-ticket — the implementer Cyrus agent matches that label via its `routingLabels` config, picks up the ticket, and runs `/implement-sub-issue`. The orchestrator then polls Linear until the sub-ticket reaches a terminal state.
 
 Cyrus is not required — the skills still run in a plain `claude` session and fall back to in-session dispatch when no implementer agent answers within the handoff-ack timeout — but the full multi-agent flow needs at least one implementer and one maintainer Cyrus instance.
@@ -169,7 +169,7 @@ The three skills split Linear tickets across **role-specialized Cyrus agents**, 
 
 A fully separated **multi-identity** deployment (one OAuth user per role) is possible but not required — it buys a distinct audit trail per role at the cost of 3× the OAuth and webhook surface. See [HOL-724](https://linear.app/holos-run/issue/HOL-724) for the rationale behind picking the single-identity pattern as the default.
 
-**Comment tagging for cross-hop observability.** Every comment the skills post on a Linear ticket is prefixed with `[role=<role> slot=<SLOT> gen=<N>]`. `role` is `orchestrator`, `implementer`, or `maintainer`; `slot` is the worktree-derived agent slot (`agent-1` etc.); `gen` increments each time the same ticket is re-handed-off (typically `1`, `2` after a stall retry). This tag makes the handoff chain reconstructible from the Linear activity stream alone.
+**Comment tagging for cross-hop observability.** Every comment the skills post on a Linear ticket is prefixed with `[role=<role> gen=<N>]`. `role` is `planner`, `orchestrator`, `implementer`, or `maintainer`; `gen` increments each time the same ticket is re-handed-off (typically `1`, `2` after a stall retry). When the session environment exports `AGENT_NAME`, the tag also includes `agent=<AGENT_NAME>` (e.g., `[role=implementer agent=builder-1 gen=1]`) so a reusable agent identity can be correlated across tasks. Agent identity is **not** derived from the worktree path — worktrees are task-scoped, not agent-scoped.
 
 ## License
 

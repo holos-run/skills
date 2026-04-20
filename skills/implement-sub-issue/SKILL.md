@@ -1,12 +1,12 @@
 ---
 name: implement-sub-issue
 description: Implement a single Linear ticket end-to-end. Use this skill when the user provides a Linear ticket (URL or identifier like HOL-525) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement ticket", "work on this ticket", "fix this ticket", or when given a Linear ticket identifier alone. Handles the full workflow: fetch ticket from Linear, create branch, comment on ticket, implement, open a GitHub PR, run code review, fix findings, wait for CI, merge, and update the Linear ticket. For parent tickets with sub-tickets, use /implement-primary-issue instead.
-version: 1.1.0
+version: 1.2.0
 ---
 
 # Implement Ticket
 
-Full workflow for implementing a single Linear ticket: fetch the ticket, create a feature branch, announce on the ticket (with agent slot), implement using repository conventions, open a GitHub PR that links back to the Linear ticket, run code review (before waiting for CI), fix findings, wait for CI checks, merge, and move the Linear ticket to `Done`.
+Full workflow for implementing a single Linear ticket: fetch the ticket, create a feature branch, announce on the ticket, implement using repository conventions, open a GitHub PR that links back to the Linear ticket, run code review (before waiting for CI), fix findings, wait for CI checks, merge, and move the Linear ticket to `Done`.
 
 For parent Linear tickets with sub-tickets, use the `/implement-primary-issue` skill instead — it iterates over sub-tickets, implements each one via this skill, runs code review/fix loops, and merges.
 
@@ -50,15 +50,15 @@ Record:
 
 **Sub-ticket check:** call `mcp__linear-server__list_issues` with `parentId: "<TICKET_ID>"`. If the ticket has its own sub-tickets, **stop and inform the user** to use `/implement-primary-issue` instead. Do not implement a parent ticket directly.
 
-### 2. Determine the Agent Slot
+### 2. Capture the Agent Identifier (Optional)
 
-Worktrees are named `holos-console-agent-<N>`. Extract the slot:
+The worktree is task-scoped — do **not** try to derive an agent identifier from `$(pwd)`. Instead, read an optional agent name from the environment. Cyrus or the operator may export `AGENT_NAME` to identify a reusable agent (e.g., `builder-1`, `maintainer-east`); if nothing is set, leave it empty and omit the `agent=` field from comment tags.
 
 ```bash
-SLOT=$(basename "$(pwd)" | sed -n 's/.*agent-\([0-9]\+\).*/agent-\1/p')
+AGENT_NAME="${AGENT_NAME:-}"
 ```
 
-If `$SLOT` is empty, fall back to `SLOT="agent-unknown-$(basename "$(pwd)")"`.
+When `AGENT_NAME` is set, comment tags include `agent=<AGENT_NAME>`; when unset, the tag omits the field entirely. Do not fabricate a slot from the working directory.
 
 ### 3. Name the Session
 
@@ -93,7 +93,7 @@ Determine the **role** for this session based on the ticket's labels (read from 
 - If the ticket has `role/maintainer`, `ROLE=maintainer` — this is a cleanup/follow-up session.
 - Otherwise (including `role/implementer` or no role label), `ROLE=implementer`.
 
-Post a comment announcing which agent is working on this ticket. Every comment in this skill's workflow must be tagged with `[role=<ROLE> slot=<SLOT> gen=1]` so the orchestrator and humans can reconstruct the handoff chain.
+Post a comment announcing work is starting on this ticket. Every comment in this skill's workflow must be tagged with `[role=<ROLE> gen=1]` (include `agent=<AGENT_NAME>` only when that env var is set) so the orchestrator and humans can reconstruct the handoff chain.
 
 Call `mcp__linear-server__save_comment` with:
 
@@ -101,9 +101,8 @@ Call `mcp__linear-server__save_comment` with:
 - `body`:
 
   ```
-  [role=<ROLE> slot=<SLOT> gen=1] Working on this ticket.
+  [role=<ROLE>[ agent=<AGENT_NAME>] gen=1] Working on this ticket.
 
-  - Agent slot: <SLOT>
   - Branch: <branch-name>
   ```
 
@@ -636,14 +635,13 @@ Calculate elapsed time and post a summary comment on the Linear ticket. Call `mc
 - `body`:
 
   ```
-  [role=<ROLE> slot=<SLOT> gen=1] ## Implementation Complete
+  [role=<ROLE>[ agent=<AGENT_NAME>] gen=1] ## Implementation Complete
 
   - PR: #<PR_NUMBER> (<PR_URL>)
   - Branch: <branch-name>
   - Result: <MERGED | MERGED_WITH_DEFERRED_ACS | ESCALATED>
   - Review rounds: <count>
   - Wall clock time: <minutes>m <seconds>s
-  - Agent slot: <SLOT>
   [- Follow-up ticket: <FOLLOW_UP_IDENTIFIER> (labeled role/maintainer)]
   [- Deferred ACs: <N> (ticket left In Progress with needs-human-review)]
   ```

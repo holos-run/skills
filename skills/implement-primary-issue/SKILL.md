@@ -1,7 +1,7 @@
 ---
 name: implement-primary-issue
 description: Execute a full implementation plan from a parent Linear ticket with sub-tickets. Iterates over each sub-ticket, dispatches to /implement-sub-issue (which handles implementation, review, CI, and merge end-to-end), tracks wall clock timing, sweeps for follow-up tickets, and posts a summary. Triggers on phrases like "implement linear plan", "execute linear plan", "run the linear plan", "implement parent ticket", or when given a parent Linear ticket identifier with sub-tickets.
-version: 2.1.0
+version: 2.2.0
 ---
 
 # Implement Linear Plan
@@ -61,15 +61,15 @@ Initialize a tracking structure for per-sub-ticket timing and results. For each 
 - `SUB_PR` — the PR number (if any)
 - `FOLLOW_UP_IDENTIFIER` — follow-up Linear ticket identifier (if any)
 
-### 2. Determine the Agent Slot
+### 2. Capture the Agent Identifier (Optional)
 
-Worktrees are named `holos-console-agent-<N>`. Extract the slot:
+The worktree is task-scoped — do **not** try to derive an agent identifier from `$(pwd)`. Instead, read an optional agent name from the environment. Cyrus or the operator may export `AGENT_NAME` to identify a reusable agent (e.g., `orchestrator-main`); if nothing is set, leave it empty and omit the `agent=` field from comment tags.
 
 ```bash
-SLOT=$(basename "$(pwd)" | sed -n 's/.*agent-\([0-9]\+\).*/agent-\1/p')
+AGENT_NAME="${AGENT_NAME:-}"
 ```
 
-If `$SLOT` is empty, fall back to `SLOT="agent-unknown-$(basename "$(pwd)")"`.
+When `AGENT_NAME` is set, comment tags include `agent=<AGENT_NAME>`; when unset, the tag omits the field entirely. Do not fabricate a slot from the working directory.
 
 ### 3. Transition Labels on the Parent Ticket
 
@@ -137,10 +137,10 @@ Applying the `role/implementer` label is the handoff signal. The implementer Cyr
 
 Post an orchestrator comment announcing the handoff, then apply the label.
 
-Call `mcp__linear-server__save_comment` with `issue: "<SUB_IDENTIFIER>"` and body (real newlines):
+Call `mcp__linear-server__save_comment` with `issue: "<SUB_IDENTIFIER>"` and body (real newlines). Include `agent=<AGENT_NAME>` only when that env var is set.
 
 ```
-[role=orchestrator slot=<SLOT> gen=1] Handing off to implementer agent.
+[role=orchestrator[ agent=<AGENT_NAME>] gen=1] Handing off to implementer agent.
 
 - Parent plan: <PARENT_IDENTIFIER>
 - Queue position: <N> of <TOTAL>
@@ -205,7 +205,7 @@ SUB_ELAPSED=$((SUB_END_TIME - SUB_START_TIME))
 If the poll loop exits with result `STALLED`, post a comment on the sub-ticket before moving on. Call `mcp__linear-server__save_comment` with `issue: "<SUB_IDENTIFIER>"` and body:
 
 ```
-[role=orchestrator slot=<SLOT> gen=1] Sub-ticket stalled.
+[role=orchestrator[ agent=<AGENT_NAME>] gen=1] Sub-ticket stalled.
 
 - No state change or new comments for <elapsed> minutes.
 - Last activity: <LAST_ACTIVITY>
@@ -261,10 +261,9 @@ PLAN_SECONDS=$((PLAN_ELAPSED % 60))
 Body (real newlines, not `\n`):
 
 ```
-[role=orchestrator slot=<SLOT> gen=1] ## Plan Execution Complete
+[role=orchestrator[ agent=<AGENT_NAME>] gen=1] ## Plan Execution Complete
 
 Total wall clock time: <PLAN_MINUTES>m <PLAN_SECONDS>s
-Orchestrator slot: <SLOT>
 
 ### Wall-Clock by Role
 
@@ -321,7 +320,7 @@ Otherwise (children remain in `started` due to deferred ACs or escalation), leav
 - **Follow-up routing**: Follow-up tickets created during review (by `/implement-sub-issue`) are labeled `role/maintainer`, not `role/implementer`, so a dedicated maintainer agent handles them. The follow-up sweep in step 8 hands these off the same way.
 - **Escalation is permanent**: Once a sub-ticket gets `needs-human-review` (either from the implementer's review loop or from a stall-escalation here), the orchestrator does not re-attempt it. A human must intervene.
 - **Wall clock timing**: Every sub-ticket, every follow-up, and the overall plan track wall clock time. The closing summary breaks out implementer vs. maintainer vs. orchestrator overhead.
-- **Comment tagging**: Every orchestrator comment starts with `[role=orchestrator slot=<SLOT> gen=<N>]` so the handoff chain is reconstructible. Implementer and maintainer agents use `role=implementer` / `role=maintainer` respectively. `gen` increments on each handoff iteration of the same ticket (e.g., if a stalled ticket is later retried).
+- **Comment tagging**: Every orchestrator comment starts with `[role=orchestrator gen=<N>]` (add ` agent=<AGENT_NAME>` only when the env var is set) so the handoff chain is reconstructible. Implementer and maintainer agents use `role=implementer` / `role=maintainer` respectively. `gen` increments on each handoff iteration of the same ticket (e.g., if a stalled ticket is later retried).
 - **Linear markdown**: Send real newlines in all Linear `body` / `description` values — never `\n` escape sequences.
 
 ### Commit Conventions
