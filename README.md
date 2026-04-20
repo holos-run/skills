@@ -40,6 +40,35 @@ The first command registers this repository as a marketplace (reading `.claude-p
 - **GitHub CLI (`gh`)** — authenticated against the repo you're shipping code into; used for branches, PRs, reviews, and merges.
 - **A Linear team using native parent/child issues** — sub-tickets are linked via `parentId`, not markdown checkbox parsing.
 
+### Setting up a persistent Linear MCP connection
+
+The Linear MCP server is reachable over HTTP at `https://mcp.linear.app/mcp`. Wire it into Claude Code using `mcp-remote` as a local bridge, authenticated with a Linear API key.
+
+1. **Install `mcp-remote`** globally:
+
+   ```shell
+   npm install -g mcp-remote
+   ```
+
+2. **Configure your Linear API key** (keys start with `lin_api_`) in `~/.cyrus/.env`:
+
+   ```shell
+   LINEAR_API_KEY=lin_api_xxxxxxxxxxxxxxxxxxxxxxxx
+   ```
+
+   Then restart Cyrus so it picks up the new environment:
+
+   ```shell
+   systemctl restart cyrus
+   ```
+
+3. **Register the MCP server** with Claude Code. If an existing `linear-server` entry is present, remove it first:
+
+   ```shell
+   claude mcp remove linear-server
+   claude mcp add linear-server -- npx mcp-remote https://mcp.linear.app/mcp --header 'Authorization: Bearer ${LINEAR_API_KEY}'
+   ```
+
 ## Repository layout
 
 ```
