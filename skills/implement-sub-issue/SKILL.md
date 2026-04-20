@@ -88,19 +88,28 @@ Strip special characters from the slug (keep only alphanumeric and hyphens).
 
 ### 5. Comment on the Ticket
 
-Post a comment announcing which agent is working on this ticket. Call `mcp__linear-server__save_comment` with:
+Determine the **role** for this session based on the ticket's labels (read from `TICKET_LABELS` captured in step 1):
+
+- If the ticket has `role/maintainer`, `ROLE=maintainer` — this is a cleanup/follow-up session.
+- Otherwise (including `role/implementer` or no role label), `ROLE=implementer`.
+
+Post a comment announcing which agent is working on this ticket. Every comment in this skill's workflow must be tagged with `[role=<ROLE> slot=<SLOT> gen=1]` so the orchestrator and humans can reconstruct the handoff chain.
+
+Call `mcp__linear-server__save_comment` with:
 
 - `issue: "<TICKET_IDENTIFIER>"`
 - `body`:
 
   ```
-  Working on this ticket.
+  [role=<ROLE> slot=<SLOT> gen=1] Working on this ticket.
 
   - Agent slot: <SLOT>
   - Branch: <branch-name>
   ```
 
 Real newlines — no `\n` escape sequences.
+
+This first comment is load-bearing: the `/implement-primary-issue` orchestrator uses its presence within `HANDOFF_ACK_TIMEOUT` to confirm that an agent is actually listening on the role label.
 
 Also move the ticket into the `In Progress` workflow state and add the `implementing` label. Ensure the `implementing` label exists for the team; if missing, create it via `mcp__linear-server__create_issue_label` with `name: "implementing"` and `team: "<TEAM_KEY>"`.
 
@@ -109,6 +118,8 @@ Call `mcp__linear-server__save_issue` with:
 - `issue: "<TICKET_IDENTIFIER>"`
 - `state: "In Progress"`
 - `labels: ["implementing", ...existing labels]`
+
+Do not strip the ticket's `role/*` label — leave it so the orchestrator can see which role picked the ticket up.
 
 If the team does not have a state named exactly `In Progress`, call `mcp__linear-server__list_issue_statuses` with `team: "<TEAM_KEY>"` and pick the `started`-type state.
 
@@ -533,6 +544,7 @@ Call `mcp__linear-server__save_issue` with:
 - `team: "<TEAM_KEY>"`
 - `parentId: "<PARENT_ID>"` if the ticket being implemented has a parent (so the follow-up attaches to the same plan); otherwise omit `parentId` and reference the original ticket in the body
 - `title: "fix: address review findings from PR #${PR_NUMBER}"`
+- `labels: ["role/maintainer"]` — route the follow-up to the maintainer agent, not back to the implementer. Ensure the label exists for the team (create via `mcp__linear-server__create_issue_label` if missing).
 - `description`:
 
   ```markdown
@@ -547,6 +559,10 @@ Call `mcp__linear-server__save_issue` with:
   ## Source
 
   Review output: `tmp/review-pr/pr-${PR_NUMBER}/round-2.md`
+
+  ## How This Ticket Is Triggered
+
+  Labeled `role/maintainer` at creation — the maintainer Cyrus agent (`routingLabels: ["role/maintainer"]`) picks this up automatically. No orchestrator action required.
   ```
 
 Record the new follow-up ticket's identifier (e.g., `HOL-612`) as `FOLLOW_UP_IDENTIFIER`.
@@ -620,7 +636,7 @@ Calculate elapsed time and post a summary comment on the Linear ticket. Call `mc
 - `body`:
 
   ```
-  ## Implementation Complete
+  [role=<ROLE> slot=<SLOT> gen=1] ## Implementation Complete
 
   - PR: #<PR_NUMBER> (<PR_URL>)
   - Branch: <branch-name>
@@ -628,7 +644,7 @@ Calculate elapsed time and post a summary comment on the Linear ticket. Call `mc
   - Review rounds: <count>
   - Wall clock time: <minutes>m <seconds>s
   - Agent slot: <SLOT>
-  [- Follow-up ticket: <FOLLOW_UP_IDENTIFIER> (style-only review findings)]
+  [- Follow-up ticket: <FOLLOW_UP_IDENTIFIER> (labeled role/maintainer)]
   [- Deferred ACs: <N> (ticket left In Progress with needs-human-review)]
   ```
 
