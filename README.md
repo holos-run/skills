@@ -122,9 +122,54 @@ Code still ships through GitHub — the PR is opened with `gh`, reviewed, CI-gat
 - **Worktree-aware agent slots.** Cyrus places each session in a worktree named like `holos-console-agent-<N>`. Every skill extracts that slot from `$(pwd)` and includes it in Linear comments so humans can correlate a comment with a specific background agent.
 - **One skill per Cyrus role.** Assign a parent (planning) ticket to Cyrus → `/plan-primary-issue` fires. Re-assign that parent to run the plan → `/implement-primary-issue` fires. Assign a single sub-ticket → `/implement-sub-issue` fires. The three skills map cleanly onto the three common Cyrus entry points.
 - **Linear round-trips, not ad-hoc chatter.** Everything meaningful — plan body, phase list, agent slot, merge status, follow-up tickets — lands on the Linear ticket. This keeps Cyrus's Linear-native activity stream the durable record of the work.
-- **Safe handoff between skills.** `/implement-primary-issue` only orchestrates; it delegates the full branch/PR/review/CI/merge lifecycle to `/implement-sub-issue` per phase, so any single sub-ticket can be re-run independently without duplicating logic.
+- **Label-based handoff between agents.** `/implement-primary-issue` does not implement sub-tickets in-process. It applies a `role/*` label to each sub-ticket — the implementer Cyrus agent matches that label via its `routingLabels` config, picks up the ticket, and runs `/implement-sub-issue`. The orchestrator then polls Linear until the sub-ticket reaches a terminal state.
 
-Cyrus is not required — these skills run fine in a plain `claude` session — but the conventions (agent slot, Linear-first state, parent/child sub-tickets) are chosen to make Cyrus-driven work legible.
+Cyrus is not required — the skills still run in a plain `claude` session and fall back to in-session dispatch when no implementer agent answers within the handoff-ack timeout — but the full multi-agent flow needs at least one implementer and one maintainer Cyrus instance.
+
+### Multi-agent handoff architecture
+
+The three skills split Linear tickets across **role-specialized Cyrus agents**, all running as a single Linear identity. Role selection is driven by labels on the ticket, matched against Cyrus's per-repository `labelPrompts` and `routingLabels`.
+
+| Role | Triggering label | Cyrus prompt mode | Typical `allowedTools` | Applied by |
+|---|---|---|---|---|
+| Planner | `role/planner` | `scoper` | `readOnly` + MCP writes | Human (assigns master ticket) |
+| Orchestrator | `role/orchestrator` | `scoper` or custom | `readOnly` + MCP writes | `/plan-primary-issue` → `/implement-primary-issue` on the master ticket at the start of execution |
+| Implementer | `role/implementer` | `builder` | `all` | `/implement-primary-issue`, one sub-ticket at a time |
+| Maintainer | `role/maintainer` | `builder` | `safe` (no `Bash` beyond allow-list) | `/implement-sub-issue` when creating a follow-up from review |
+
+**Flow.**
+
+1. A human assigns a master ticket to Cyrus (the master ticket has `role/planner` — or the planner skill applies it at entry).
+2. `/plan-primary-issue` writes the plan body, creates phase sub-tickets (unlabeled by default), and exits.
+3. A human re-assigns the master ticket to Cyrus to kick off execution. `/implement-primary-issue` swaps `role/planner` for `role/orchestrator` on the master.
+4. For each phase sub-ticket, the orchestrator applies `role/implementer`, then polls Linear (`get_issue` + `list_comments`, every 60s) until the sub-ticket transitions to a completed state, gets `needs-human-review`, or stalls (no activity for 30 minutes).
+5. The implementer Cyrus agent (matched by `routingLabels: ["role/implementer"]`) picks up the labeled sub-ticket, runs `/implement-sub-issue` end-to-end (branch, code, PR, Codex review, CI, merge), and posts a final summary comment.
+6. If the review produced style-only follow-ups, `/implement-sub-issue` creates a follow-up Linear sub-ticket labeled `role/maintainer`. The maintainer Cyrus agent picks those up autonomously — the orchestrator's follow-up sweep polls them but does not reapply any label.
+7. After the queue drains, `/implement-primary-issue` posts a summary on the master ticket with per-role wall-clock time and moves the master to `Done` if every child is `completed` or `canceled`.
+
+**Sample `~/.cyrus/config.json` stanza** (single Cyrus process, three roles via label routing):
+
+```json
+{
+  "repositories": [
+    {
+      "name": "holos-console",
+      "repositoryPath": "/home/jeff/workspace/holos-run/holos-console",
+      "baseBranch": "main",
+      "routingLabels": ["role/implementer", "role/maintainer", "role/orchestrator", "role/planner"],
+      "labelPrompts": {
+        "scoper": { "labels": ["role/planner", "role/orchestrator"], "allowedTools": "readOnly" },
+        "builder": { "labels": ["role/implementer"], "allowedTools": "all" },
+        "debugger": { "labels": ["role/maintainer"], "allowedTools": "safe" }
+      }
+    }
+  ]
+}
+```
+
+A fully separated **multi-identity** deployment (one OAuth user per role) is possible but not required — it buys a distinct audit trail per role at the cost of 3× the OAuth and webhook surface. See [HOL-724](https://linear.app/holos-run/issue/HOL-724) for the rationale behind picking the single-identity pattern as the default.
+
+**Comment tagging for cross-hop observability.** Every comment the skills post on a Linear ticket is prefixed with `[role=<role> slot=<SLOT> gen=<N>]`. `role` is `orchestrator`, `implementer`, or `maintainer`; `slot` is the worktree-derived agent slot (`agent-1` etc.); `gen` increments each time the same ticket is re-handed-off (typically `1`, `2` after a stall retry). This tag makes the handoff chain reconstructible from the Linear activity stream alone.
 
 ## License
 
