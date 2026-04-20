@@ -1,7 +1,7 @@
 ---
 name: plan-primary-issue
 description: Create an implementation plan for a Linear ticket. Use this skill when the user provides a Linear ticket (URL or identifier like HOL-525) and wants a plan broken into phases, with each phase tracked as a Linear sub-ticket under the provided parent. Triggers on phrases like "plan this ticket", "plan ticket for", "break this Linear issue into phases", or any request to produce a phased plan against a Linear ticket.
-version: 1.4.0
+version: 1.5.0
 ---
 
 # Plan Ticket
@@ -46,21 +46,21 @@ Record:
 - `TICKET_IDENTIFIER` — e.g., `HOL-525`
 - `TICKET_TITLE`
 - `TEAM_ID` / `TEAM_KEY` — needed to create sub-tickets on the same team
-- `EXISTING_LABELS` — preserved when adding `role/planner`
+- `EXISTING_LABELS` — preserved when adding `Planner`
 - `EXISTING_BODY` — preserve or extend; never silently discard prior content
 
 ### 2. Mark the Ticket as Being Planned
 
-Apply the `role/planner` label **before exploring the codebase**. The role label is the signal that planning has started — do not post a redundant "Planning this ticket" comment. Cyrus's `routingLabels` matches `role/planner` to this repo's planner prompt (see [README — Multi-agent handoff](../../README.md)).
+Apply the `Planner` label **before exploring the codebase**. The role label is the signal that planning has started — do not post a redundant "Planning this ticket" comment. Cyrus's `routingLabels` matches `Planner` to this repo's planner prompt (see [README — Multi-agent handoff](../../README.md)).
 
-Call `mcp__linear-server__list_issue_labels` to find the `role/planner` label ID for the ticket's team (prefer team-scoped; fall back to workspace). If missing, create it via `mcp__linear-server__create_issue_label` with `name: "role/planner"` and `team: "<TEAM_KEY>"`.
+The four Role labels (`Planner`, `Orchestrator`, `Implementer`, `Maintainer`) live under the `Role` label group and are expected to exist already — run `/setup-linear-labels` once per Linear team if they do not. Do **not** call `list_issue_labels` or `create_issue_label` from this skill; assume the labels exist.
 
-Then update the issue labels via `mcp__linear-server__save_issue`:
+Update the issue labels via `mcp__linear-server__save_issue`:
 
 - `issue: "<TICKET_IDENTIFIER>"`
-- `labels: ["role/planner", ...existing label names minus any prior "role/*" label]`
+- `labels: ["Planner", ...existing label names minus any prior Role label ("Planner", "Orchestrator", "Implementer", "Maintainer")]`
 
-Preserve every other existing label — `save_issue` replaces the full label set on update. Strip any existing `role/*` label before adding `role/planner` so the ticket is only routed to one role at a time.
+Preserve every other existing label — `save_issue` replaces the full label set on update. Strip any existing Role label before adding `Planner` so the ticket is only routed to one role at a time.
 
 ### 3. Name the Session
 
@@ -152,7 +152,7 @@ If the provided ticket already had a non-empty body, either merge it into the `#
 
 ### 8. Create Sub-Tickets for Each Phase
 
-For each phase, create a Linear sub-ticket (child of the provided ticket). **Create sub-tickets without the `role/implementer` label first**, so Cyrus's implementer agent does not pick them up before the plan body is finalized in step 9. The label is applied in step 10 once the master plan is fully wired up — this avoids racing an implementer against an unfinished plan.
+For each phase, create a Linear sub-ticket (child of the provided ticket). **Create sub-tickets without the `Implementer` label first**, so Cyrus's implementer agent does not pick them up before the plan body is finalized in step 9. The label is applied in step 10 once the master plan is fully wired up — this avoids racing an implementer against an unfinished plan.
 
 Call `mcp__linear-server__save_issue` with (no `issue` field — this creates a new issue):
 
@@ -196,7 +196,7 @@ Call `mcp__linear-server__save_issue` with (no `issue` field — this creates a 
 
   ## How This Ticket Is Triggered
 
-  This ticket is auto-triggered when the `role/implementer` label is applied by the `/implement-primary-issue` orchestrator. The implementer Cyrus agent (matched via `routingLabels: ["role/implementer"]`) will pick it up, run `/implement-sub-issue`, and post progress back here.
+  This ticket is auto-triggered when the `Implementer` label is applied by the `/implement-primary-issue` orchestrator. The implementer Cyrus agent (matched via `routingLabels: ["Implementer"]`) will pick it up, run `/implement-sub-issue`, and post progress back here.
 
   To implement this ticket manually in a local Claude Code session, invoke `/implement-sub-issue <IDENTIFIER>`. Do not use `/implement-issue` — that is the GitHub variant.
   ```
@@ -222,30 +222,28 @@ Linear will render each identifier as a cross-link. The leading checkbox is info
 
 ### 10. Leave Phase Sub-Tickets Unlabeled for Orchestrator Handoff
 
-**Default (recommended):** Do **not** apply `role/implementer` to phase sub-tickets here. Leave them in their default state. The `/implement-primary-issue` orchestrator applies `role/implementer` to each sub-ticket one at a time as it dequeues it, so only one implementer agent runs at a time and the plan is executed in strict creation order.
+**Default (recommended):** Do **not** apply `Implementer` to phase sub-tickets here. Leave them in their default state. The `/implement-primary-issue` orchestrator applies `Implementer` to each sub-ticket one at a time as it dequeues it, so only one implementer agent runs at a time and the plan is executed in strict creation order.
 
-**Opt-in eager mode:** If the operator explicitly wants all phase sub-tickets to become available to the implementer agent pool immediately (e.g., for independent phases that can run in parallel), apply `role/implementer` to each phase sub-ticket now:
+**Opt-in eager mode:** If the operator explicitly wants all phase sub-tickets to become available to the implementer agent pool immediately (e.g., for independent phases that can run in parallel), apply `Implementer` to each phase sub-ticket now:
 
 ```
 mcp__linear-server__save_issue
   issue: "<SUB_IDENTIFIER>"
-  labels: ["role/implementer", ...existing labels]
+  labels: ["Implementer", ...existing labels]
 ```
 
-Ensure the `role/implementer` label exists for the team (create via `mcp__linear-server__create_issue_label` if missing). Prefer the default orchestrator-driven mode unless the user has explicitly asked for parallel phase execution — parallel phases multiply merge-conflict risk on shared files.
+Prefer the default orchestrator-driven mode unless the user has explicitly asked for parallel phase execution — parallel phases multiply merge-conflict risk on shared files.
 
 ### 11. Hand Off the Parent Ticket to the Orchestrator
 
 Planning is done. Transition the parent ticket from the planner role to the orchestrator role so the next Cyrus pickup routes to `/implement-primary-issue`.
 
-Ensure the `role/orchestrator` label exists for the team (create via `mcp__linear-server__create_issue_label` with `name: "role/orchestrator"` and `team: "<TEAM_KEY>"` if missing).
-
 Call `mcp__linear-server__save_issue`:
 
 - `issue: "<TICKET_IDENTIFIER>"`
-- `labels: ["role/orchestrator", ...existing label names minus "role/planner"]`
+- `labels: ["Orchestrator", ...existing label names minus "Planner"]`
 
-The resulting label set on the parent must contain `role/orchestrator` and must NOT contain `role/planner`. Other non-role labels (team, area, priority, etc.) are preserved.
+The resulting label set on the parent must contain `Orchestrator` and must NOT contain `Planner`. Other non-role labels (team, area, priority, etc.) are preserved.
 
 ### 12. Report to the User
 
@@ -258,9 +256,9 @@ After all tickets are created, report a summary:
 
 ## Key Principles
 
-- **`role/*` is canonical**: The four canonical labels are `role/planner`, `role/orchestrator`, `role/implementer`, and `role/maintainer`. `role/*` labels are the Cyrus routing signal; Linear's native state (`Todo`, `In Progress`, `Done`) covers lifecycle.
-- **Role first, then explore**: Apply `role/planner` to the parent *before* exploring the codebase so operators can see the ticket is owned. The label is the signal — don't post a redundant "Planning this ticket" comment.
-- **Hand off at the end**: Every plan ends by swapping the parent's `role/planner` for `role/orchestrator` so the next Cyrus pickup routes to `/implement-primary-issue`.
+- **Role labels are canonical**: The four canonical labels are `Planner`, `Orchestrator`, `Implementer`, and `Maintainer`, all under the `Role` label group. These labels are the Cyrus routing signal; Linear's native state (`Todo`, `In Progress`, `Done`) covers lifecycle. Skills assume the labels already exist — run `/setup-linear-labels` once per Linear team if they do not.
+- **Role first, then explore**: Apply `Planner` to the parent *before* exploring the codebase so operators can see the ticket is owned. The label is the signal — don't post a redundant "Planning this ticket" comment.
+- **Hand off at the end**: Every plan ends by swapping the parent's `Planner` for `Orchestrator` so the next Cyrus pickup routes to `/implement-primary-issue`.
 - **Infer before asking**: Try to infer acceptance criteria from the prompt. Only ask for clarification when truly ambiguous.
 - **Proto-first**: When the feature requires new RPC messages, always make proto changes a dedicated first phase.
 - **Backwards compatibility**: Never remove or renumber existing proto fields. Only add new ones.
@@ -275,8 +273,6 @@ After all tickets are created, report a summary:
 | Action | Tool | Key arguments |
 |--------|------|---------------|
 | Fetch ticket | `mcp__linear-server__get_issue` | `id: "<IDENTIFIER>"` |
-| List labels | `mcp__linear-server__list_issue_labels` | `team: "<TEAM_KEY>"` |
-| Create label | `mcp__linear-server__create_issue_label` | `name`, `team` |
 | Update labels / body | `mcp__linear-server__save_issue` | `issue`, `labels` or `description` |
 | Create sub-ticket | `mcp__linear-server__save_issue` | `team`, `parentId`, `title`, `description` |
 | Post comment | `mcp__linear-server__save_comment` | `issue`, `body` |

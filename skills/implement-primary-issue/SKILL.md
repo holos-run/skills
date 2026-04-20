@@ -1,12 +1,12 @@
 ---
 name: implement-primary-issue
 description: Execute a full implementation plan from a parent Linear ticket with sub-tickets. Iterates over each sub-ticket, dispatches to /implement-sub-issue (which handles implementation, review, CI, and merge end-to-end), tracks wall clock timing, sweeps for follow-up tickets, and posts a summary. Triggers on phrases like "implement linear plan", "execute linear plan", "run the linear plan", "implement parent ticket", or when given a parent Linear ticket identifier with sub-tickets.
-version: 2.4.0
+version: 2.5.0
 ---
 
 # Implement Linear Plan
 
-Orchestrator for a parent Linear ticket containing sub-tickets (Linear native parent/child). For each sub-ticket, the orchestrator **hands off** to the implementer Cyrus agent by applying the `role/implementer` label, then monitors the sub-ticket's Linear state, labels, and comments to detect completion, escalation, or stall. This skill does **not** implement sub-tickets in-process — that work is done by a separate Cyrus agent (or a local `/implement-sub-issue` invocation if Cyrus is not available).
+Orchestrator for a parent Linear ticket containing sub-tickets (Linear native parent/child). For each sub-ticket, the orchestrator **hands off** to the implementer Cyrus agent by applying the `Implementer` label, then monitors the sub-ticket's Linear state, labels, and comments to detect completion, escalation, or stall. This skill does **not** implement sub-tickets in-process — that work is done by a separate Cyrus agent (or a local `/implement-sub-issue` invocation if Cyrus is not available).
 
 See [HOL-724](https://linear.app/holos-run/issue/HOL-724) for the architectural rationale behind the handoff model (Option A: single Cyrus identity, role labels drive `labelPrompts`/`routingLabels`).
 
@@ -21,8 +21,9 @@ Key principles:
 
 - **Discover sub-tickets via Linear parent/child**, not by parsing markdown task lists. Call `mcp__linear-server__list_issues` with `parentId: "<PARENT_UUID>"`.
 - **Completion state comes from Linear workflow state**, not from checking a `[x]` box. A sub-ticket is "already done" if its state is `Done` or equivalent `completed`-type state.
-- **Follow-up tickets are Linear sub-tickets** (same `parentId`), not GitHub issues. Follow-ups are labeled `role/maintainer` — not `role/implementer` — so a dedicated maintainer agent picks them up.
-- **Handoff, not in-process dispatch.** Apply `role/implementer` to the next sub-ticket and poll Linear until it transitions out of `started`. The implementer agent posts progress comments on the sub-ticket as it works.
+- **Follow-up tickets are Linear sub-tickets** (same `parentId`), not GitHub issues. Follow-ups are labeled `Maintainer` — not `Implementer` — so a dedicated maintainer agent picks them up.
+- **Handoff, not in-process dispatch.** Apply `Implementer` to the next sub-ticket and poll Linear until it transitions out of `started`. The implementer agent posts progress comments on the sub-ticket as it works.
+- **Labels are pre-existing.** The four Role labels (`Planner`, `Orchestrator`, `Implementer`, `Maintainer`) live under the `Role` label group and are expected to exist already — run `/setup-linear-labels` once per Linear team if they do not. Do not call `list_issue_labels` or `create_issue_label` from this skill.
 
 Always send real newlines in Linear `body` / `description` values — never `\n` escape sequences.
 
@@ -71,22 +72,16 @@ AGENT_NAME="${AGENT_NAME:-}"
 
 When `AGENT_NAME` is set, comment tags include `agent=<AGENT_NAME>`; when unset, the tag omits the field entirely. Do not fabricate a slot from the working directory.
 
-### 3. Ensure Role Labels Exist for the Team
+### 3. Ensure the Parent Carries the Orchestrator Label
 
-The parent ticket should already carry `role/orchestrator` — `/plan-primary-issue` hands off with that label in its final step.
+The parent ticket should already carry `Orchestrator` — `/plan-primary-issue` hands off with that label in its final step.
 
-Ensure the following labels exist for the team (create any missing ones via `mcp__linear-server__create_issue_label`):
-
-- `role/orchestrator`
-- `role/implementer` (needed for handoff in step 6)
-- `role/maintainer` (needed for follow-up routing in step 8)
-
-If the parent is missing `role/orchestrator` (or carries some other `role/*`), update its labels via `mcp__linear-server__save_issue`:
+If the parent is missing `Orchestrator` (or carries some other Role label — `Planner`, `Implementer`, `Maintainer`), update its labels via `mcp__linear-server__save_issue`:
 
 - `issue: "<PARENT_IDENTIFIER>"`
-- `labels: ["role/orchestrator", ...existing labels minus any prior "role/*" label]`
+- `labels: ["Orchestrator", ...existing labels minus any prior Role label]`
 
-The resulting label set on the parent must contain `role/orchestrator` and must not contain any other `role/*` label. Non-role labels are preserved.
+The resulting label set on the parent must contain `Orchestrator` and must not contain any other Role label. Non-role labels are preserved.
 
 ### 4. Name the Session
 
@@ -120,7 +115,7 @@ If every sub-ticket is already `completed`, post a comment on the parent noting 
 
 ### 6. Iterate Over Sub-Tickets — Hand Off and Monitor
 
-For each open sub-ticket in the queue, hand off to the implementer agent by applying the `role/implementer` label, then poll Linear until the sub-ticket reaches a terminal state. Sub-tickets are processed **sequentially** — only one `role/implementer` label is outstanding at a time, which keeps the implementer agent pool doing one sub-ticket at a time and avoids parallel merges.
+For each open sub-ticket in the queue, hand off to the implementer agent by applying the `Implementer` label, then poll Linear until the sub-ticket reaches a terminal state. Sub-tickets are processed **sequentially** — only one `Implementer` label is outstanding at a time, which keeps the implementer agent pool doing one sub-ticket at a time and avoids parallel merges.
 
 Before starting each sub-ticket, record the start time and update the session name:
 
@@ -132,9 +127,9 @@ SUB_START_TIME=$(date +%s)
 /rename <SUB_IDENTIFIER> <sub title> (plan <PARENT_IDENTIFIER>)
 ```
 
-#### 6a. Hand Off: Apply `role/implementer` to the Sub-Ticket
+#### 6a. Hand Off: Apply `Implementer` to the Sub-Ticket
 
-Applying the `role/implementer` label is the handoff signal. The implementer Cyrus agent matches this label via its `routingLabels` config and picks up the sub-ticket. See [README — Multi-agent handoff](../../README.md) for the Cyrus config shape.
+Applying the `Implementer` label is the handoff signal. The implementer Cyrus agent matches this label via its `routingLabels` config and picks up the sub-ticket. See [README — Multi-agent handoff](../../README.md) for the Cyrus config shape.
 
 Post an orchestrator comment announcing the handoff, then apply the label.
 
@@ -145,15 +140,15 @@ Call `mcp__linear-server__save_comment` with `issue: "<SUB_IDENTIFIER>"` and bod
 
 - Parent plan: <PARENT_IDENTIFIER>
 - Queue position: <N> of <TOTAL>
-- Handoff signal: label `role/implementer`
+- Handoff signal: label `Implementer`
 ```
 
 Then call `mcp__linear-server__save_issue`:
 
 - `issue: "<SUB_IDENTIFIER>"`
-- `labels: ["role/implementer", ...existing labels minus any prior "role/*" label]`
+- `labels: ["Implementer", ...existing labels minus any prior Role label]`
 
-Strip any pre-existing `role/*` label except `role/implementer` before applying, so the ticket is routed to exactly one role.
+Strip any pre-existing Role label except `Implementer` before applying, so the ticket is routed to exactly one role.
 
 **If Cyrus is not available in this environment** (e.g., local development, no webhook listener), the orchestrator falls back to an in-session dispatch: run `/implement-sub-issue <SUB_IDENTIFIER>` directly in this session instead of polling Linear. Detect this case by checking whether a comment from the implementer agent appears within `HANDOFF_ACK_TIMEOUT` (default 2 minutes); if not, assume no implementer agent is listening and fall back.
 
@@ -187,7 +182,7 @@ Once the poll loop exits, determine the outcome by reading the sub-ticket's curr
 |------------------|--------|--------|
 | `completed`-type (Done) | — | MERGED |
 | `started`-type (In Progress) | has `needs-human-review` | MERGED_WITH_DEFERRED_ACS or ESCALATED |
-| Any other state, still labeled `role/implementer` | — | STALLED |
+| Any other state, still labeled `Implementer` | — | STALLED |
 | `canceled`-type | — | CANCELED |
 
 To distinguish MERGED_WITH_DEFERRED_ACS from ESCALATED when the ticket is `In Progress` with `needs-human-review`, scan the ticket's comments for the phrase "Merged With Deferred Acceptance Criteria". If found, it's MERGED_WITH_DEFERRED_ACS; otherwise ESCALATED.
@@ -212,13 +207,13 @@ If the poll loop exits with result `STALLED`, post a comment on the sub-ticket b
 - Last activity: <LAST_ACTIVITY>
 - Plan: <PARENT_IDENTIFIER>
 
-Marking this sub-ticket `needs-human-review` and removing `role/implementer` to take it out of the implementer queue.
+Marking this sub-ticket `needs-human-review` and removing `Implementer` to take it out of the implementer queue.
 ```
 
 Then call `mcp__linear-server__save_issue`:
 
 - `issue: "<SUB_IDENTIFIER>"`
-- `labels: ["needs-human-review", ...existing labels minus "role/implementer"]`
+- `labels: ["needs-human-review", ...existing labels minus "Implementer"]`
 
 ### 7. Reset for Next Sub-Ticket
 
@@ -232,11 +227,11 @@ After all original sub-tickets have been processed, re-call `mcp__linear-server_
 
 Compare against the original sub-ticket list. Any **new** open sub-ticket (not in the original list) is a follow-up ticket.
 
-Follow-up tickets are routed to the **maintainer** agent, not the implementer. Maintainer agents are tuned for mechanical cleanup: stricter `allowedTools`, smaller PRs, no proto or schema changes. Follow-up tickets created by `/implement-sub-issue` for style-only review findings are already labeled `role/maintainer`. If a follow-up ticket is missing that label, apply it here before handing off.
+Follow-up tickets are routed to the **maintainer** agent, not the implementer. Maintainer agents are tuned for mechanical cleanup: stricter `allowedTools`, smaller PRs, no proto or schema changes. Follow-up tickets created by `/implement-sub-issue` for style-only review findings are already labeled `Maintainer`. If a follow-up ticket is missing that label, apply it here before handing off.
 
 For each follow-up ticket found, run the same handoff + monitor cycle as step 6, but:
 
-- Apply `role/maintainer` instead of `role/implementer` in step 6a.
+- Apply `Maintainer` instead of `Implementer` in step 6a.
 - Use a wider `POLL_INTERVAL` (default 120s) since maintainer work is typically shorter and lower priority.
 - Track timing and results the same way as original sub-tickets.
 
@@ -308,18 +303,18 @@ If every child is `completed` or `canceled`, call `mcp__linear-server__save_issu
 
 - `issue: "<PARENT_IDENTIFIER>"`
 - `state: "Done"`
-- `labels: [...existing minus "role/orchestrator"]`
+- `labels: [...existing minus "Orchestrator"]`
 
-Otherwise (children remain in `started` due to deferred ACs or escalation), leave the parent in its current state and add the `needs-human-review` label alongside `role/orchestrator` so it surfaces in triage queues.
+Otherwise (children remain in `started` due to deferred ACs or escalation), leave the parent in its current state and add the `needs-human-review` label alongside `Orchestrator` so it surfaces in triage queues.
 
 ## Guardrails
 
 ### Safety
 
-- **`role/*` is canonical**: The four canonical labels are `role/planner`, `role/orchestrator`, `role/implementer`, and `role/maintainer`. `role/*` labels drive Cyrus routing; Linear's native state covers lifecycle.
-- **One sub-ticket at a time**: Only one `role/implementer` label is outstanding at any moment. No parallel PRs. The orchestrator applies `role/implementer` to the next queued sub-ticket only after the previous one reaches a terminal state.
+- **Role labels are canonical**: The four canonical labels are `Planner`, `Orchestrator`, `Implementer`, and `Maintainer`, all under the `Role` label group. They drive Cyrus routing; Linear's native state covers lifecycle. Skills assume the labels already exist — run `/setup-linear-labels` once per Linear team if they do not.
+- **One sub-ticket at a time**: Only one `Implementer` label is outstanding at any moment. No parallel PRs. The orchestrator applies `Implementer` to the next queued sub-ticket only after the previous one reaches a terminal state.
 - **Handoff, not in-process implementation**: The orchestrator never branches, never codes, never opens a PR. It applies labels, polls Linear, and aggregates results. The implementer Cyrus agent (or a local `/implement-sub-issue` fallback) does the work.
-- **Follow-up routing**: Follow-up tickets created during review (by `/implement-sub-issue`) are labeled `role/maintainer`, not `role/implementer`, so a dedicated maintainer agent handles them. The follow-up sweep in step 8 hands these off the same way.
+- **Follow-up routing**: Follow-up tickets created during review (by `/implement-sub-issue`) are labeled `Maintainer`, not `Implementer`, so a dedicated maintainer agent handles them. The follow-up sweep in step 8 hands these off the same way.
 - **Escalation is permanent**: Once a sub-ticket gets `needs-human-review` (either from the implementer's review loop or from a stall-escalation here), the orchestrator does not re-attempt it. A human must intervene.
 - **Wall clock timing**: Every sub-ticket, every follow-up, and the overall plan track wall clock time. The closing summary breaks out implementer vs. maintainer vs. orchestrator overhead.
 - **Comment tagging**: Every orchestrator comment starts with `[role=orchestrator gen=<N>]` (add ` agent=<AGENT_NAME>` only when the env var is set) so the handoff chain is reconstructible. Implementer and maintainer agents use `role=implementer` / `role=maintainer` respectively. `gen` increments on each handoff iteration of the same ticket (e.g., if a stalled ticket is later retried).
@@ -333,7 +328,7 @@ Otherwise (children remain in `started` due to deferred ACs or escalation), leav
 ## Prerequisites
 
 - **Claude Code**: For the orchestrator session (this skill runs here)
-- **Self-hosted Cyrus agent(s)**: At minimum an implementer agent whose `routingLabels` includes `role/implementer`. A separate maintainer agent whose `routingLabels` includes `role/maintainer` is strongly recommended — without it, follow-up tickets will sit unpicked. See [README — Multi-agent handoff](../../README.md) for the Cyrus config shape.
+- **Self-hosted Cyrus agent(s)**: At minimum an implementer agent whose `routingLabels` includes `Implementer`. A separate maintainer agent whose `routingLabels` includes `Maintainer` is strongly recommended — without it, follow-up tickets will sit unpicked. See [README — Multi-agent handoff](../../README.md) for the Cyrus config shape.
 - **Linear MCP**: `mcp__linear-server__*` tools authorized in the orchestrator's Claude Code session (for label/state/comment operations)
 - **Fallback Codex CLI / GitHub CLI / make**: Only needed if the orchestrator falls back to in-session `/implement-sub-issue` (no Cyrus implementer available). Implementer-agent environments have these already.
 - **Git**: Orchestrator can run in any directory — it never touches code
@@ -350,11 +345,11 @@ Otherwise (children remain in `started` due to deferred ACs or escalation), leav
 
 The skill will:
 
-1. Fetch HOL-525 (which already carries `role/orchestrator` from `/plan-primary-issue`'s handoff step), list its children: HOL-601, HOL-602, HOL-603
-2. Apply `role/implementer` to HOL-601 → implementer Cyrus agent picks it up → orchestrator polls Linear every 60s → HOL-601 reaches Done → MERGED
-3. Apply `role/implementer` to HOL-602 → implementer picks up → orchestrator polls → HOL-602 gets `needs-human-review` → ESCALATED
-4. Apply `role/implementer` to HOL-603 → implementer picks up → orchestrator polls → HOL-603 reaches Done with follow-up HOL-610 created → MERGED
-5. Re-list children of HOL-525, find HOL-610 (labeled `role/maintainer` by the implementer) → poll until maintainer agent picks it up and completes → Done
+1. Fetch HOL-525 (which already carries `Orchestrator` from `/plan-primary-issue`'s handoff step), list its children: HOL-601, HOL-602, HOL-603
+2. Apply `Implementer` to HOL-601 → implementer Cyrus agent picks it up → orchestrator polls Linear every 60s → HOL-601 reaches Done → MERGED
+3. Apply `Implementer` to HOL-602 → implementer picks up → orchestrator polls → HOL-602 gets `needs-human-review` → ESCALATED
+4. Apply `Implementer` to HOL-603 → implementer picks up → orchestrator polls → HOL-603 reaches Done with follow-up HOL-610 created → MERGED
+5. Re-list children of HOL-525, find HOL-610 (labeled `Maintainer` by the implementer) → poll until maintainer agent picks it up and completes → Done
 6. Post summary with wall-clock timing (by role) on HOL-525; move HOL-525 to Done only if every child is `completed` or `canceled`
 
 ## Linear API Cheat Sheet
@@ -368,4 +363,3 @@ The skill will:
 | Post comment | `mcp__linear-server__save_comment` | `issue`, `body` |
 | List comments | `mcp__linear-server__list_comments` | `issueId: "<IDENTIFIER>"` |
 | Look up workflow states | `mcp__linear-server__list_issue_statuses` | `team: "<TEAM_KEY>"` |
-| List / create labels | `mcp__linear-server__list_issue_labels` / `mcp__linear-server__create_issue_label` | `team: "<TEAM_KEY>"` |

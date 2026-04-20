@@ -1,7 +1,7 @@
 ---
 name: implement-sub-issue
 description: Implement a single Linear ticket end-to-end. Use this skill when the user provides a Linear ticket (URL or identifier like HOL-525) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement ticket", "work on this ticket", "fix this ticket", or when given a Linear ticket identifier alone. Handles the full workflow: fetch ticket from Linear, create branch, comment on ticket, implement, open a GitHub PR, run code review, fix findings, wait for CI, merge, and update the Linear ticket. For parent tickets with sub-tickets, use /implement-primary-issue instead.
-version: 1.4.0
+version: 1.5.0
 ---
 
 # Implement Ticket
@@ -90,8 +90,10 @@ Strip special characters from the slug (keep only alphanumeric and hyphens).
 
 Determine the **role** for this session based on the ticket's labels (read from `TICKET_LABELS` captured in step 1):
 
-- If the ticket has `role/maintainer`, `ROLE=maintainer` — this is a cleanup/follow-up session.
-- Otherwise (including `role/implementer` or no role label), `ROLE=implementer`.
+- If the ticket has `Maintainer`, `ROLE=maintainer` — this is a cleanup/follow-up session.
+- Otherwise (including `Implementer` or no Role label), `ROLE=implementer`.
+
+The four Role labels (`Planner`, `Orchestrator`, `Implementer`, `Maintainer`) live under the `Role` label group and are expected to exist already — run `/setup-linear-labels` once per Linear team if they do not. Do **not** call `list_issue_labels` or `create_issue_label` from this skill; assume the labels exist.
 
 Post a comment announcing work is starting on this ticket. Every comment in this skill's workflow must be tagged with `[role=<ROLE> gen=1]` (include `agent=<AGENT_NAME>` only when that env var is set) so the orchestrator and humans can reconstruct the handoff chain.
 
@@ -117,7 +119,7 @@ Call `mcp__linear-server__save_issue` with:
 - `issue: "<TICKET_IDENTIFIER>"`
 - `state: "In Progress"`
 
-Do not strip the ticket's `role/*` label — leave it so the orchestrator can see which role picked the ticket up.
+Do not strip the ticket's Role label — leave it so the orchestrator can see which role picked the ticket up.
 
 If the team does not have a state named exactly `In Progress`, call `mcp__linear-server__list_issue_statuses` with `team: "<TEAM_KEY>"` and pick the `started`-type state.
 
@@ -435,7 +437,7 @@ If critical or important findings remain after round 2:
    gh pr edit $PR_NUMBER --add-label "needs-human-review"
    ```
 
-3. Also add a `needs-human-review` label on the Linear ticket (create the label if missing via `mcp__linear-server__create_issue_label`):
+3. Also add a `needs-human-review` label on the Linear ticket:
 
    Call `mcp__linear-server__save_issue` with `issue: "<TICKET_IDENTIFIER>"` and `labels: ["needs-human-review", ...existing]`.
 
@@ -542,7 +544,7 @@ Call `mcp__linear-server__save_issue` with:
 - `team: "<TEAM_KEY>"`
 - `parentId: "<PARENT_ID>"` if the ticket being implemented has a parent (so the follow-up attaches to the same plan); otherwise omit `parentId` and reference the original ticket in the body
 - `title: "fix: address review findings from PR #${PR_NUMBER}"`
-- `labels: ["role/maintainer"]` — route the follow-up to the maintainer agent, not back to the implementer. Ensure the label exists for the team (create via `mcp__linear-server__create_issue_label` if missing).
+- `labels: ["Maintainer"]` — route the follow-up to the maintainer agent, not back to the implementer.
 - `description`:
 
   ```markdown
@@ -560,7 +562,7 @@ Call `mcp__linear-server__save_issue` with:
 
   ## How This Ticket Is Triggered
 
-  Labeled `role/maintainer` at creation — the maintainer Cyrus agent (`routingLabels: ["role/maintainer"]`) picks this up automatically. No orchestrator action required.
+  Labeled `Maintainer` at creation — the maintainer Cyrus agent (`routingLabels: ["Maintainer"]`) picks this up automatically. No orchestrator action required.
   ```
 
 Record the new follow-up ticket's identifier (e.g., `HOL-612`) as `FOLLOW_UP_IDENTIFIER`.
@@ -598,7 +600,7 @@ Parse `PR_BODY` for a heading that matches (case-insensitive): `## Deferred Acce
 - **One or more real bullets** → the PR shipped with an unresolved AC gap. Do **NOT** move the ticket to `Done`. Instead:
 
   1. Keep the ticket in `In Progress` (do not call `save_issue` with `state: "Done"`).
-  2. Ensure a `needs-human-review` label exists for the team; create it via `mcp__linear-server__create_issue_label` if missing. Then call `mcp__linear-server__save_issue` with `issue: "<TICKET_IDENTIFIER>"` and `labels: ["needs-human-review", ...existing labels]`.
+  2. Call `mcp__linear-server__save_issue` with `issue: "<TICKET_IDENTIFIER>"` and `labels: ["needs-human-review", ...existing labels]`.
   3. Post a comment on the ticket via `mcp__linear-server__save_comment` with `issue: "<TICKET_IDENTIFIER>"` and body (real newlines):
 
      ```
@@ -641,7 +643,7 @@ Calculate elapsed time and post a summary comment on the Linear ticket. Call `mc
   - Result: <MERGED | MERGED_WITH_DEFERRED_ACS | ESCALATED>
   - Review rounds: <count>
   - Wall clock time: <minutes>m <seconds>s
-  [- Follow-up ticket: <FOLLOW_UP_IDENTIFIER> (labeled role/maintainer)]
+  [- Follow-up ticket: <FOLLOW_UP_IDENTIFIER> (labeled Maintainer)]
   [- Deferred ACs: <N> (ticket left In Progress with needs-human-review)]
   ```
 
@@ -656,7 +658,7 @@ SECONDS=$((ELAPSED % 60))
 
 ## Key Conventions
 
-- **`role/*` is canonical**: The four canonical labels are `role/planner`, `role/orchestrator`, `role/implementer`, and `role/maintainer`. Linear's native `In Progress` / `Done` state covers lifecycle; `role/*` drives Cyrus routing.
+- **Role labels are canonical**: The four canonical labels are `Planner`, `Orchestrator`, `Implementer`, and `Maintainer`, all under the `Role` label group. Linear's native `In Progress` / `Done` state covers lifecycle; Role labels drive Cyrus routing. Skills assume the labels already exist — run `/setup-linear-labels` once per Linear team if they do not.
 - **No backwards compatibility**: This code is not yet released; breaking changes are fine
 - **RED GREEN**: Write tests before implementation
 - **Regular commits**: Commit logical units as you go, not one giant commit at the end
@@ -693,4 +695,3 @@ SECONDS=$((ELAPSED % 60))
 | Create follow-up ticket | `mcp__linear-server__save_issue` | `team`, `parentId`, `title`, `description` |
 | Post comment | `mcp__linear-server__save_comment` | `issue`, `body` |
 | Look up workflow states | `mcp__linear-server__list_issue_statuses` | `team: "<TEAM_KEY>"` |
-| Create label | `mcp__linear-server__create_issue_label` | `name`, `team` |

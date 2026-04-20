@@ -16,8 +16,9 @@ Install directly from this GitHub repo using Claude Code's built-in plugin comma
 /plugin install linear-workflow@holos-run
 ```
 
-The first command registers this repository as a marketplace (reading `.claude-plugin/marketplace.json`). The second installs the `linear-workflow` plugin from it, which exposes three slash commands:
+The first command registers this repository as a marketplace (reading `.claude-plugin/marketplace.json`). The second installs the `linear-workflow` plugin from it, which exposes four slash commands:
 
+- `/setup-linear-labels` (one-time setup)
 - `/plan-primary-issue`
 - `/implement-primary-issue`
 - `/implement-sub-issue`
@@ -39,6 +40,17 @@ The first command registers this repository as a marketplace (reading `.claude-p
 - **Linear MCP server** — the skills call `mcp__linear-server__*` tools. Configure the Linear MCP server in Claude Code, or run the plugin under Cyrus, which provides it.
 - **GitHub CLI (`gh`)** — authenticated against the repo you're shipping code into; used for branches, PRs, reviews, and merges.
 - **A Linear team using native parent/child issues** — sub-tickets are linked via `parentId`, not markdown checkbox parsing.
+- **The canonical `Role` label group configured on the Linear team** — the other three skills assume `Planner`, `Orchestrator`, `Implementer`, and `Maintainer` already exist under a `Role` parent group. Run `/setup-linear-labels <TEAM_KEY>` once per team to create them (see below).
+
+### One-time label setup
+
+Before using any of the workflow skills, run the setup skill against each Linear team you plan to use with this plugin. It creates the `Role` label group and the four child role labels, and is idempotent.
+
+```text
+/setup-linear-labels HOL
+```
+
+The three workflow skills (`/plan-primary-issue`, `/implement-primary-issue`, `/implement-sub-issue`) no longer check for or create these labels at runtime — this keeps each skill invocation fast and token-cheap. If a workflow skill fails because a Role label is missing, run `/setup-linear-labels` and try again.
 
 ### Setting up a persistent Linear MCP connection
 
@@ -77,6 +89,7 @@ skills/
 │   ├── marketplace.json      # marketplace manifest (lists linear-workflow)
 │   └── plugin.json           # plugin manifest for linear-workflow
 ├── skills/
+│   ├── setup-linear-labels/SKILL.md
 │   ├── plan-primary-issue/SKILL.md
 │   ├── implement-primary-issue/SKILL.md
 │   └── implement-sub-issue/SKILL.md
@@ -87,10 +100,11 @@ skills/
 
 ## The `linear-workflow` plugin
 
-Three skills cover the full lifecycle of a Linear ticket, from plan to merged PR. They're designed to be triggered by Cyrus when a human assigns a Linear ticket to the Cyrus agent user, but they also work as ordinary Claude Code slash commands in a local session.
+Four skills cover the full lifecycle of a Linear ticket, from plan to merged PR. The three workflow skills are designed to be triggered by Cyrus when a human assigns a Linear ticket to the Cyrus agent user, but they also work as ordinary Claude Code slash commands in a local session. The setup skill is human-run, once per team.
 
 | Skill | Role |
 |---|---|
+| `/setup-linear-labels <TEAM_KEY>` | One-time per team. Creates the `Role` label group plus `Planner`, `Orchestrator`, `Implementer`, and `Maintainer` child labels. The other skills assume these labels exist. |
 | `/plan-primary-issue <HOL-###>` | Explore the codebase and turn a Linear ticket into a phased plan. Writes the master plan into the parent ticket's description and creates one Linear sub-ticket per phase (`parentId` set natively). |
 | `/implement-primary-issue <HOL-###>` | Orchestrator. Lists the parent ticket's Linear sub-tickets, dispatches each to `/implement-sub-issue` in order, tracks per-phase wall-clock timing, sweeps for follow-up tickets, and posts a summary. |
 | `/implement-sub-issue <HOL-###>` | End-to-end lifecycle for a single ticket: branch from `origin/main`, comment on the Linear ticket, implement per repo conventions, open a GitHub PR linking back to Linear (`Fixes HOL-###`), run cross-model code review, fix findings, wait for CI, merge, then transition the Linear ticket to `Done`. |
@@ -99,16 +113,17 @@ See each skill's `SKILL.md` for the full workflow and triggering phrases.
 
 ### Typical flow
 
-1. **Plan** — `/plan-primary-issue HOL-525` applies `role/planner` to the parent ticket, explores the codebase, writes a master plan into the parent body, creates one Linear sub-ticket per phase, and finally hands off by swapping `role/planner` for `role/orchestrator` on the parent.
-2. **Implement** — `/implement-primary-issue HOL-525` picks up the parent already carrying `role/orchestrator`, iterates over its Linear children, and hands each off to `/implement-sub-issue` via `role/implementer`.
-3. **Merge** — Each `/implement-sub-issue` invocation handles its sub-ticket end-to-end: branch, PR, cross-model review, CI, merge, and move the Linear ticket to `Done`. Follow-up tickets (things found during review) are created as new Linear sub-tickets under the same parent.
+1. **Setup (once per team)** — `/setup-linear-labels HOL` creates the `Role` label group and the four role labels. Skip this if they already exist.
+2. **Plan** — `/plan-primary-issue HOL-525` applies `Planner` to the parent ticket, explores the codebase, writes a master plan into the parent body, creates one Linear sub-ticket per phase, and finally hands off by swapping `Planner` for `Orchestrator` on the parent.
+3. **Implement** — `/implement-primary-issue HOL-525` picks up the parent already carrying `Orchestrator`, iterates over its Linear children, and hands each off to `/implement-sub-issue` via `Implementer`.
+4. **Merge** — Each `/implement-sub-issue` invocation handles its sub-ticket end-to-end: branch, PR, cross-model review, CI, merge, and move the Linear ticket to `Done`. Follow-up tickets (things found during review) are created as new Linear sub-tickets under the same parent.
 
 ### How it works with Linear
 
 Linear is the source of truth for tickets. The skills use `mcp__linear-server__*` MCP tools to:
 
 - Fetch tickets (`get_issue`) and discover sub-tickets by `parentId` — not by parsing `[ ]` task lists.
-- Apply canonical `role/*` labels (`role/planner` → `role/orchestrator` → `role/implementer` / `role/maintainer`) so operators can see which role currently owns each ticket.
+- Apply canonical Role labels (`Planner` → `Orchestrator` → `Implementer` / `Maintainer`, all under a `Role` parent group) so operators can see which role currently owns each ticket. The labels must already exist on the team — `/setup-linear-labels` creates them once per team.
 - Post structured comments tagged with the role (and optional `agent=<AGENT_NAME>` when the environment exports one), so you can tell which role handled each handoff.
 - Write the master plan directly into the parent ticket's body and create per-phase sub-tickets with `parentId` set, producing a native Linear parent/child tree.
 - Move tickets to `Done` after merge, as a belt-and-suspenders safeguard alongside the `Fixes HOL-###` magic-word in the PR body.
@@ -120,31 +135,31 @@ Code still ships through GitHub — the PR is opened with `gh`, reviewed, CI-gat
 [Cyrus](https://github.com/ceedaragents/cyrus) is a background agent runner that watches Linear, spins up a Claude Code session in a git worktree for each assigned ticket, and streams the agent's activity back to the Linear ticket as comments. The `linear-workflow` skills are built for this flow:
 
 - **Task-scoped worktrees.** Cyrus places each session in a worktree dedicated to one task (e.g., `~/.cyrus/worktrees/HOL-724`). The skills treat the worktree as task-scoped only — they do not parse the path for an agent slot. If you want comments tagged with a reusable agent identity, export `AGENT_NAME` in the session environment and the skills will include `agent=<AGENT_NAME>` in the comment tag.
-- **One skill per Cyrus role.** Assign a parent (planning) ticket to Cyrus → `/plan-primary-issue` fires. Re-assign that parent to run the plan → `/implement-primary-issue` fires. Assign a single sub-ticket → `/implement-sub-issue` fires. The three skills map cleanly onto the three common Cyrus entry points.
+- **One skill per Cyrus role.** Assign a parent (planning) ticket to Cyrus → `/plan-primary-issue` fires. Re-assign that parent to run the plan → `/implement-primary-issue` fires. Assign a single sub-ticket → `/implement-sub-issue` fires. The three workflow skills map cleanly onto the three common Cyrus entry points.
 - **Linear round-trips, not ad-hoc chatter.** Everything meaningful — plan body, phase list, role handoffs, merge status, follow-up tickets — lands on the Linear ticket. This keeps Cyrus's Linear-native activity stream the durable record of the work.
-- **Label-based handoff between agents.** `/implement-primary-issue` does not implement sub-tickets in-process. It applies a `role/*` label to each sub-ticket — the implementer Cyrus agent matches that label via its `routingLabels` config, picks up the ticket, and runs `/implement-sub-issue`. The orchestrator then polls Linear until the sub-ticket reaches a terminal state.
+- **Label-based handoff between agents.** `/implement-primary-issue` does not implement sub-tickets in-process. It applies a Role label to each sub-ticket — the implementer Cyrus agent matches that label via its `routingLabels` config, picks up the ticket, and runs `/implement-sub-issue`. The orchestrator then polls Linear until the sub-ticket reaches a terminal state.
 
 Cyrus is not required — the skills still run in a plain `claude` session and fall back to in-session dispatch when no implementer agent answers within the handoff-ack timeout — but the full multi-agent flow needs at least one implementer and one maintainer Cyrus instance.
 
 ### Multi-agent handoff architecture
 
-The three skills split Linear tickets across **role-specialized Cyrus agents**, all running as a single Linear identity. Role selection is driven by labels on the ticket, matched against Cyrus's per-repository `labelPrompts` and `routingLabels`.
+The three workflow skills split Linear tickets across **role-specialized Cyrus agents**, all running as a single Linear identity. Role selection is driven by labels on the ticket, matched against Cyrus's per-repository `labelPrompts` and `routingLabels`. The four canonical labels — `Planner`, `Orchestrator`, `Implementer`, `Maintainer` — live under a `Role` parent label group in Linear. Run `/setup-linear-labels <TEAM_KEY>` once per Linear team to create them.
 
 | Role | Triggering label | Cyrus prompt mode | Typical `allowedTools` | Applied by |
 |---|---|---|---|---|
-| Planner | `role/planner` | `scoper` | `readOnly` + MCP writes | Human (assigns master ticket) |
-| Orchestrator | `role/orchestrator` | `scoper` or custom | `readOnly` + MCP writes | `/plan-primary-issue` (as its final handoff step on the master ticket) |
-| Implementer | `role/implementer` | `builder` | `all` | `/implement-primary-issue`, one sub-ticket at a time |
-| Maintainer | `role/maintainer` | `builder` | `safe` (no `Bash` beyond allow-list) | `/implement-sub-issue` when creating a follow-up from review |
+| Planner | `Planner` | `scoper` | `readOnly` + MCP writes | Human (assigns master ticket) |
+| Orchestrator | `Orchestrator` | `scoper` or custom | `readOnly` + MCP writes | `/plan-primary-issue` (as its final handoff step on the master ticket) |
+| Implementer | `Implementer` | `builder` | `all` | `/implement-primary-issue`, one sub-ticket at a time |
+| Maintainer | `Maintainer` | `builder` | `safe` (no `Bash` beyond allow-list) | `/implement-sub-issue` when creating a follow-up from review |
 
 **Flow.**
 
-1. A human assigns a master ticket to Cyrus (the master ticket has `role/planner` — or the planner skill applies it at entry).
-2. `/plan-primary-issue` writes the plan body, creates phase sub-tickets (unlabeled by default), swaps `role/planner` for `role/orchestrator` on the master as its final step, and exits.
-3. A human re-assigns the master ticket to Cyrus to kick off execution. `/implement-primary-issue` picks it up already carrying `role/orchestrator`.
-4. For each phase sub-ticket, the orchestrator applies `role/implementer`, then polls Linear (`get_issue` + `list_comments`, every 60s) until the sub-ticket transitions to a completed state, gets `needs-human-review`, or stalls (no activity for 30 minutes).
-5. The implementer Cyrus agent (matched by `routingLabels: ["role/implementer"]`) picks up the labeled sub-ticket, runs `/implement-sub-issue` end-to-end (branch, code, PR, Codex review, CI, merge), and posts a final summary comment.
-6. If the review produced style-only follow-ups, `/implement-sub-issue` creates a follow-up Linear sub-ticket labeled `role/maintainer`. The maintainer Cyrus agent picks those up autonomously — the orchestrator's follow-up sweep polls them but does not reapply any label.
+1. A human assigns a master ticket to Cyrus (the master ticket has `Planner` — or the planner skill applies it at entry).
+2. `/plan-primary-issue` writes the plan body, creates phase sub-tickets (unlabeled by default), swaps `Planner` for `Orchestrator` on the master as its final step, and exits.
+3. A human re-assigns the master ticket to Cyrus to kick off execution. `/implement-primary-issue` picks it up already carrying `Orchestrator`.
+4. For each phase sub-ticket, the orchestrator applies `Implementer`, then polls Linear (`get_issue` + `list_comments`, every 60s) until the sub-ticket transitions to a completed state, gets `needs-human-review`, or stalls (no activity for 30 minutes).
+5. The implementer Cyrus agent (matched by `routingLabels: ["Implementer"]`) picks up the labeled sub-ticket, runs `/implement-sub-issue` end-to-end (branch, code, PR, Codex review, CI, merge), and posts a final summary comment.
+6. If the review produced style-only follow-ups, `/implement-sub-issue` creates a follow-up Linear sub-ticket labeled `Maintainer`. The maintainer Cyrus agent picks those up autonomously — the orchestrator's follow-up sweep polls them but does not reapply any label.
 7. After the queue drains, `/implement-primary-issue` posts a summary on the master ticket with per-role wall-clock time and moves the master to `Done` if every child is `completed` or `canceled`.
 
 **Sample `~/.cyrus/config.json` stanza** (single Cyrus process, three roles via label routing):
@@ -156,11 +171,11 @@ The three skills split Linear tickets across **role-specialized Cyrus agents**, 
       "name": "holos-console",
       "repositoryPath": "/home/jeff/workspace/holos-run/holos-console",
       "baseBranch": "main",
-      "routingLabels": ["role/implementer", "role/maintainer", "role/orchestrator", "role/planner"],
+      "routingLabels": ["Implementer", "Maintainer", "Orchestrator", "Planner"],
       "labelPrompts": {
-        "scoper": { "labels": ["role/planner", "role/orchestrator"], "allowedTools": "readOnly" },
-        "builder": { "labels": ["role/implementer"], "allowedTools": "all" },
-        "debugger": { "labels": ["role/maintainer"], "allowedTools": "safe" }
+        "scoper": { "labels": ["Planner", "Orchestrator"], "allowedTools": "readOnly" },
+        "builder": { "labels": ["Implementer"], "allowedTools": "all" },
+        "debugger": { "labels": ["Maintainer"], "allowedTools": "safe" }
       }
     }
   ]
