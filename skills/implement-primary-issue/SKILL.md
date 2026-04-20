@@ -1,7 +1,7 @@
 ---
 name: implement-primary-issue
 description: Execute a full implementation plan from a parent Linear ticket with sub-tickets. Iterates over each sub-ticket, dispatches to /implement-sub-issue (which handles implementation, review, CI, and merge end-to-end), tracks wall clock timing, sweeps for follow-up tickets, and posts a summary. Triggers on phrases like "implement linear plan", "execute linear plan", "run the linear plan", "implement parent ticket", or when given a parent Linear ticket identifier with sub-tickets.
-version: 2.0.0
+version: 2.1.0
 ---
 
 # Implement Linear Plan

@@ -1,7 +1,7 @@
 ---
 name: implement-sub-issue
 description: Implement a single Linear ticket end-to-end. Use this skill when the user provides a Linear ticket (URL or identifier like HOL-525) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement ticket", "work on this ticket", "fix this ticket", or when given a Linear ticket identifier alone. Handles the full workflow: fetch ticket from Linear, create branch, comment on ticket, implement, open a GitHub PR, run code review, fix findings, wait for CI, merge, and update the Linear ticket. For parent tickets with sub-tickets, use /implement-primary-issue instead.
-version: 1.0.0
+version: 1.1.0
 ---
 
 # Implement Ticket

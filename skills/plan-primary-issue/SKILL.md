@@ -1,7 +1,7 @@
 ---
 name: plan-primary-issue
 description: Create an implementation plan for a Linear ticket. Use this skill when the user provides a Linear ticket (URL or identifier like HOL-525) and wants a plan broken into phases, with each phase tracked as a Linear sub-ticket under the provided parent. Triggers on phrases like "plan this ticket", "plan ticket for", "break this Linear issue into phases", or any request to produce a phased plan against a Linear ticket.
-version: 1.0.0
+version: 1.1.0
 ---
 
 # Plan Ticket
