@@ -10,9 +10,9 @@ This plugin provides two skills that drive an **adversarial
 plan-implement-review cycle**. Linear is the source of truth for work; code
 ships through GitHub PRs. The cycle works like this:
 
-1. A feature is described as a **Linear ticket**.
-2. **Plan** — An agent explores the codebase, creates a new primary issue with a structured plan and phased sub-tickets, then marks the original ticket Done.
-3. **Implement** — For each sub-ticket, an agent-team orchestrator dispatches teammates to:
+1. A feature is described as a **Linear issue**.
+2. **Plan** — An agent explores the codebase, creates a new primary issue with a structured plan and phased sub-issues, then marks the original issue Done.
+3. **Implement** — For each sub-issue, an agent-team orchestrator dispatches teammates to:
    - Implement the sub-issue (branch, code, tests, PR).
    - Run adversarial code review (round 1).
    - Fix round 1 findings.
@@ -21,7 +21,7 @@ ships through GitHub PRs. The cycle works like this:
    - Run a final review gate — if critical/important findings remain, the issue enters `needs-human-review` and the skill stops.
    - Wait for CI; fix failures
    - Merge to base branch.
-4. **Repeat** for all remaining sub-tickets, then sweep for follow-ups.
+4. **Repeat** for all remaining sub-issues, then sweep for follow-ups.
 5. **Summary** posted back to the primary issue with wall clock timing.
 
 The skills are **project-agnostic** — they read conventions (build commands,
@@ -39,25 +39,25 @@ claude plugin install linear-workflow@holos-run
 
 ## Skills
 
-| Skill                              | Purpose                                                                                       |
-| ---------------------------------- | --------------------------------------------------------------------------------------------- |
-| `/linear-workflow:plan-issue`      | Explore codebase, create a new primary issue with phased sub-tickets, relate back to original |
-| `/linear-workflow:implement-issue` | Implement any Linear ticket: leaf issues directly, parent issues via agent-team orchestration |
+| Skill                              | Purpose                                                                                      |
+| ---------------------------------- | -------------------------------------------------------------------------------------------- |
+| `/linear-workflow:plan-issue`      | Explore codebase, create a new primary issue with phased sub-issues, relate back to original |
+| `/linear-workflow:implement-issue` | Implement any Linear issue: leaf issues directly, parent issues via agent-team orchestration |
 
 ### Typical Workflow
 
 ```bash
-# 1. Plan — creates a new primary issue with sub-tickets
+# 1. Plan — creates a new primary issue with sub-issues
 /linear-workflow:plan-issue APP-123
 
-# 2. Implement — orchestrates all sub-tickets under the new primary
+# 2. Implement — orchestrates all sub-issues under the new primary
 /linear-workflow:implement-issue APP-234
 ```
 
-`implement-issue` self-detects whether the ticket has children:
+`implement-issue` self-detects whether the issue has children:
 
 - **No children** → implements directly (branch, code, PR, review, CI, merge)
-- **Has children** → spawns an agent-team, dispatches a teammate per sub-ticket
+- **Has children** → spawns an agent-team, dispatches a teammate per sub-issue
 
 ## Prerequisites
 
@@ -210,22 +210,22 @@ This ensures the review loop works out of the box in any repo, with the adversar
 ### plan-issue
 
 ```
-Original ticket (rough idea)
+Original issue (rough idea)
   ├── Agent explores codebase
-  ├── Creates NEW primary issue with plan + sub-tickets
-  │     ├── Sub-ticket: phase 1
-  │     ├── Sub-ticket: phase 2
-  │     └── Sub-ticket: phase 3
+  ├── Creates NEW primary issue with plan + sub-issues
+  │     ├── Sub-issue: phase 1
+  │     ├── Sub-issue: phase 2
+  │     └── Sub-issue: phase 3
   ├── Links original ←related→ new primary
   └── Marks original Done ("planning complete")
 ```
 
-The original ticket's task is "plan this feature." When planning completes, that task is done. The new primary issue tracks implementation.
+The original issue's task is "plan this feature." When planning completes, that task is done. The new primary issue tracks implementation.
 
 ### implement-issue (leaf mode)
 
 ```
-Ticket
+Issue
   ├── Branch + implement + open PR
   ├── Code review round 1 → fix
   ├── Code review round 2 → fix
@@ -238,18 +238,18 @@ Ticket
 ### implement-issue (parent mode)
 
 ```
-Parent ticket
-  ├── List children (sub-tickets)
+Parent issue
+  ├── List children (sub-issues)
   ├── Create agent-team with sequential tasks
   │
-  ├── Teammate 1: implement-issue sub-ticket-1 (leaf mode)
+  ├── Teammate 1: implement-issue sub-issue-1 (leaf mode)
   │     └── branch → code → PR → review → fix → CI → merge
-  ├── Teammate 2: implement-issue sub-ticket-2 (leaf mode)
+  ├── Teammate 2: implement-issue sub-issue-2 (leaf mode)
   │     └── branch → code → PR → review → fix → CI → merge
-  ├── Teammate 3: implement-issue sub-ticket-3 (leaf mode)
+  ├── Teammate 3: implement-issue sub-issue-3 (leaf mode)
   │     └── ...
   │
-  ├── Sweep for follow-up tickets
+  ├── Sweep for follow-up issues
   ├── Post summary with wall clock timing
   └── Mark parent Done (if all children complete)
 ```

@@ -1,32 +1,32 @@
 ---
 name: implement-issue
-description: Implement a Linear ticket end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-tickets (agent-team orchestration over children). Use this skill when the user provides a Linear ticket (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement ticket", "work on this ticket", "fix this ticket", "implement linear plan", "execute linear plan", or when given a Linear ticket identifier.
+description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
 version: 2.0.0
 ---
 
 # Implement Issue
 
-Implement a Linear ticket end-to-end. This skill self-detects whether the ticket is a leaf issue (no children) or a parent issue (has children) and adapts its behavior:
+Implement a Linear issue end-to-end. This skill self-detects whether the issue is a leaf issue (no children) or a parent issue (has children) and adapts its behavior:
 
 - **Leaf mode**: Branch, implement, open PR, run adversarial code review (up to 2 fix rounds), wait for CI, merge, and mark Done.
 - **Parent mode**: Orchestrate implementation of all child issues using an agent-team, track results, sweep for follow-ups, and post a summary.
 
-Implement the Linear ticket **{{SKILL_INPUT}}**.
+Implement the Linear issue **{{SKILL_INPUT}}**.
 
 ## Linear Conventions
 
-- **Ticket** = Linear issue. Fetched via `mcp__linear-server__*` tools.
+- **Issue** = Linear issue. Fetched via `mcp__linear-server__*` tools.
 - **PR** = GitHub pull request. Opened via `gh`.
-- The PR body must contain `Fixes <IDENTIFIER>` so Linear auto-closes the ticket on merge.
+- The PR body must contain `Fixes <IDENTIFIER>` so Linear auto-closes the issue on merge.
 - Always send real newlines in Linear `body` / `description` values — never `\n` escape sequences.
 
 ---
 
 ## Mode Detection
 
-### 1. Parse Input and Fetch Ticket
+### 1. Parse Input and Fetch Issue
 
-Parse `{{SKILL_INPUT}}` to extract the Linear ticket identifier. Accept either form:
+Parse `{{SKILL_INPUT}}` to extract the Linear issue identifier. Accept either form:
 
 - Identifier: `APP-123`
 - URL: `https://linear.app/<workspace>/issue/APP-123/<slug>`
@@ -35,17 +35,17 @@ Call `mcp__linear-server__get_issue` with `id: "<IDENTIFIER>"`.
 
 Record:
 
-- `TICKET_ID` — Linear UUID
-- `TICKET_IDENTIFIER` — e.g., `APP-123`
-- `TICKET_TITLE`
-- `TICKET_URL`
+- `ISSUE_ID` — Linear UUID
+- `ISSUE_IDENTIFIER` — e.g., `APP-123`
+- `ISSUE_TITLE`
+- `ISSUE_URL`
 - `TEAM_KEY` — e.g., `APP`
 - `EXISTING_LABELS`
-- `PARENT_IDENTIFIER` — if present, note it (this ticket may be part of an implementation plan)
+- `PARENT_IDENTIFIER` — if present, note it (this issue may be part of an implementation plan)
 
 ### 2. Check for Children
 
-Call `mcp__linear-server__list_issues` with `parentId: "<TICKET_ID>"`.
+Call `mcp__linear-server__list_issues` with `parentId: "<ISSUE_ID>"`.
 
 - **Children exist** → enter **Parent Mode** (jump to the Parent Mode section below)
 - **No children** → enter **Leaf Mode** (continue to the next section)
@@ -54,12 +54,12 @@ Call `mcp__linear-server__list_issues` with `parentId: "<TICKET_ID>"`.
 
 ## Leaf Mode
 
-Full lifecycle for implementing a single ticket with no children.
+Full lifecycle for implementing a single issue with no children.
 
 ### L1. Start Wall Clock Timer
 
 ```bash
-TICKET_START_TIME=$(date +%s)
+ISSUE_START_TIME=$(date +%s)
 ```
 
 ### L2. Create Branch
@@ -71,26 +71,26 @@ git pull origin main
 git checkout -b feat/<identifier-lowercased>-<slug>
 ```
 
-Branch naming: `feat/<identifier-lowercased>-<slug>` where slug is the ticket title in lowercase, spaces replaced by hyphens, special characters stripped, truncated to ~40 chars.
+Branch naming: `feat/<identifier-lowercased>-<slug>` where slug is the issue title in lowercase, spaces replaced by hyphens, special characters stripped, truncated to ~40 chars.
 
-### L3. Announce on the Ticket
+### L3. Announce on the Issue
 
 Post a comment via `mcp__linear-server__save_comment`:
 
-- `issue: "<TICKET_IDENTIFIER>"`
+- `issue: "<ISSUE_IDENTIFIER>"`
 - `body`:
 
 ```
-Working on this ticket.
+Working on this issue.
 
 - Branch: feat/<identifier-lowercased>-<slug>
 ```
 
-Move the ticket to In Progress and add the `implementing` label. Ensure the label exists for the team; create it if missing.
+Move the issue to In Progress and add the `implementing` label. Ensure the label exists for the team; create it if missing.
 
 Call `mcp__linear-server__save_issue`:
 
-- `issue: "<TICKET_IDENTIFIER>"`
+- `issue: "<ISSUE_IDENTIFIER>"`
 - `state: "In Progress"`
 - `labels: ["implementing", ...existing labels]`
 
@@ -121,7 +121,7 @@ Commit messages should follow the project's format (from CONTRIBUTING.md or CLAU
 ```
 <type>(<scope>): <short description>
 
-Refs: <TICKET_IDENTIFIER>
+Refs: <ISSUE_IDENTIFIER>
 ```
 
 ### L6. Final Cleanup
@@ -141,21 +141,21 @@ gh pr create --title "<concise title under 70 chars>" --body "$(cat <<'EOF'
 ## Summary
 - <bullet points describing changes>
 
-Fixes <TICKET_IDENTIFIER>
+Fixes <ISSUE_IDENTIFIER>
 
 ## Test plan
 - [ ] <specific things to verify>
 
 ## Deferred Acceptance Criteria
-- [ ] <AC from the ticket NOT addressed in this PR>
+- [ ] <AC from the issue NOT addressed in this PR>
 
 EOF
 )"
 ```
 
-Use the Linear identifier — not a GitHub issue number. If this ticket is a sub-ticket dispatched from a parent plan, use the sub-ticket identifier, not the parent.
+Use the Linear identifier — not a GitHub issue number. If this issue is a sub-issue dispatched from a parent plan, use the sub-issue identifier, not the parent.
 
-**Deferred Acceptance Criteria section**: Include only if at least one AC from the ticket was not satisfied. If every AC is addressed, omit the entire heading. Presence of this section with non-empty bullets blocks the Done transition in step L12.
+**Deferred Acceptance Criteria section**: Include only if at least one AC from the issue was not satisfied. If every AC is addressed, omit the entire heading. Presence of this section with non-empty bullets blocks the Done transition in step L12.
 
 ### L8. Code Review Loop
 
@@ -241,7 +241,7 @@ After all fixes:
 Run the review command again. Parse the output.
 
 - **If APPROVE:** Proceed to step L9.
-- **If style-only findings remain (no CRITICAL or IMPORTANT):** Proceed to step L9. Create a follow-up ticket for style findings after merge (step L11).
+- **If style-only findings remain (no CRITICAL or IMPORTANT):** Proceed to step L9. Create a follow-up issue for style findings after merge (step L11).
 - **If CRITICAL or IMPORTANT findings remain:** Fix all findings, commit, push. Proceed to L8d.
 
 #### L8d. Final Review (Gate Check)
@@ -274,9 +274,9 @@ Run the review command one final time. Parse the output.
    gh pr edit $PR_NUMBER --add-label "needs-human-review"
    ```
 
-3. Add `needs-human-review` label on the Linear ticket (create if missing):
+3. Add `needs-human-review` label on the Linear issue (create if missing):
 
-   Call `mcp__linear-server__save_issue` with `issue: "<TICKET_IDENTIFIER>"` and `labels: ["needs-human-review", ...existing]`.
+   Call `mcp__linear-server__save_issue` with `issue: "<ISSUE_IDENTIFIER>"` and `labels: ["needs-human-review", ...existing]`.
 
 4. Do NOT merge. Skip to step L13 with result ESCALATED.
 
@@ -298,7 +298,7 @@ If CI still fails after one fix attempt, escalate (add `needs-human-review` per 
 
 ### L10. Merge
 
-Before merging, handle remaining style-only findings from round 2 by creating a follow-up ticket (step L11).
+Before merging, handle remaining style-only findings from round 2 by creating a follow-up issue (step L11).
 
 ```bash
 gh pr merge $PR_NUMBER --merge --delete-branch
@@ -313,21 +313,21 @@ git push --force-with-lease
 gh pr merge $PR_NUMBER --merge --delete-branch
 ```
 
-### L11. Follow-Up Ticket for Style Findings
+### L11. Follow-Up Issue for Style Findings
 
-If style-only findings remain after round 2, create a follow-up Linear ticket:
+If style-only findings remain after round 2, create a follow-up Linear issue:
 
 Call `mcp__linear-server__save_issue`:
 
 - `team: "<TEAM_KEY>"`
-- `parentId: "<PARENT_ID>"` if this ticket has a parent (attach to same plan); otherwise omit
+- `parentId: "<PARENT_ID>"` if this issue has a parent (attach to same plan); otherwise omit
 - `title: "fix: address review findings from PR #${PR_NUMBER}"`
 - `description`:
 
 ```markdown
 ## Context
 
-PR #<PR_NUMBER> (ticket <TICKET_IDENTIFIER>) was merged with style-only review findings remaining.
+PR #<PR_NUMBER> (issue <ISSUE_IDENTIFIER>) was merged with style-only review findings remaining.
 
 ## Findings
 
@@ -336,7 +336,7 @@ PR #<PR_NUMBER> (ticket <TICKET_IDENTIFIER>) was merged with style-only review f
 
 Record the follow-up identifier as `FOLLOW_UP_IDENTIFIER`.
 
-### L12. AC-Gate and Close Ticket
+### L12. AC-Gate and Close Issue
 
 Before marking Done, check whether the PR lists deferred acceptance criteria:
 
@@ -349,7 +349,7 @@ Parse for a `## Deferred Acceptance Criteria` heading with non-empty bullets.
 **If deferred ACs exist:**
 
 - Do NOT move to Done
-- Add `needs-human-review` label on the ticket
+- Add `needs-human-review` label on the issue
 - Post a comment listing the deferred items
 - Record result as MERGED_WITH_DEFERRED_ACS
 
@@ -357,7 +357,7 @@ Parse for a `## Deferred Acceptance Criteria` heading with non-empty bullets.
 
 Move to Done via `mcp__linear-server__save_issue`:
 
-- `issue: "<TICKET_IDENTIFIER>"`
+- `issue: "<ISSUE_IDENTIFIER>"`
 - `state: "Done"`
 - `labels: [... existing labels minus "implementing"]`
 
@@ -366,13 +366,13 @@ Move to Done via `mcp__linear-server__save_issue`:
 Calculate elapsed time and post a summary comment:
 
 ```bash
-TICKET_END_TIME=$(date +%s)
-ELAPSED=$((TICKET_END_TIME - TICKET_START_TIME))
+ISSUE_END_TIME=$(date +%s)
+ELAPSED=$((ISSUE_END_TIME - ISSUE_START_TIME))
 MINUTES=$((ELAPSED / 60))
 SECONDS=$((ELAPSED % 60))
 ```
 
-Call `mcp__linear-server__save_comment` with `issue: "<TICKET_IDENTIFIER>"` and body:
+Call `mcp__linear-server__save_comment` with `issue: "<ISSUE_IDENTIFIER>"` and body:
 
 ```
 ## Implementation Complete
@@ -388,7 +388,7 @@ Call `mcp__linear-server__save_comment` with `issue: "<TICKET_IDENTIFIER>"` and 
 
 ## Parent Mode
 
-Orchestrator for a parent ticket with children. Uses Claude Code agent-teams to dispatch each child issue to a teammate.
+Orchestrator for a parent issue with children. Uses Claude Code agent-teams to dispatch each child issue to a teammate.
 
 ### P1. Start Wall Clock Timer
 
@@ -398,7 +398,7 @@ PLAN_START_TIME=$(date +%s)
 
 ### P2. List Children
 
-Call `mcp__linear-server__list_issues` with `parentId: "<TICKET_ID>"`, sorted by creation time ascending.
+Call `mcp__linear-server__list_issues` with `parentId: "<ISSUE_ID>"`, sorted by creation time ascending.
 
 For each child, record:
 
@@ -413,49 +413,49 @@ If no open children remain, post a comment that all work is complete and stop.
 
 ### P3. Transition Labels
 
-Replace `planning` with `implementing` on the parent ticket.
+Replace `planning` with `implementing` on the parent issue.
 
 Ensure the `implementing` label exists. Then call `mcp__linear-server__save_issue`:
 
-- `issue: "<TICKET_IDENTIFIER>"`
+- `issue: "<ISSUE_IDENTIFIER>"`
 - `labels: ["implementing", ...existing labels minus "planning"]`
 
 ### P4. Create Agent Team and Dispatch
 
 Create an agent team to process sub-issues. sub-issues are processed **sequentially** (each phase depends on the previous one).
 
-For each open child issue, create a task in the team with a sequential dependency on the previous task and any tasks explicitly noted as blocking dependencies in the parent ticket.
+For each open child issue, create a task in the team with a sequential dependency on the previous task and any tasks explicitly noted as blocking dependencies in the parent issue.
 
 For each task, spawn a teammate (Opus) with instructions to invoke this skill on the sub-issue:
 
 ```
 Spawn a teammate to implement <SUB_IDENTIFIER>.
 The teammate should invoke /linear-workflow:implement-issue <SUB_IDENTIFIER> to implement
-the ticket end-to-end. The skill handles branching, implementation, code review, CI, merge, and ticket transitions. Run to completion.
+the issue end-to-end. The skill handles branching, implementation, code review, CI, merge, and issue transitions. Run to completion.
 ```
 
 Wait for your teammates to complete their tasks before proceeding.
 
-After each teammate completes, detect the result by checking the sub-ticket's state in Linear:
+After each teammate completes, detect the result by checking the sub-issue's state in Linear:
 
-| Sub-ticket state | Labels | Result |
+| Sub-issue state | Labels | Result |
 |------------------|--------|--------|
 | `completed`-type (Done) | — | MERGED |
 | `started`-type (In Progress) | has `needs-human-review` | Check comments for "Deferred Acceptance Criteria" → MERGED_WITH_DEFERRED_ACS; otherwise → ESCALATED |
 | Any other state | — | FAILED |
 
-Record per-sub-ticket timing and results.
+Record per-sub-issue timing and results.
 
-After each sub-ticket, the working directory should be clean on main:
+After each sub-issue, the working directory should be clean on main:
 
 ```bash
 git checkout main
 git pull origin main
 ```
 
-### P5. Sweep for Follow-Up Tickets
+### P5. Sweep for Follow-Up Issues
 
-After all original children are processed, re-list children via `mcp__linear-server__list_issues` with `parentId: "<TICKET_ID>"`.
+After all original children are processed, re-list children via `mcp__linear-server__list_issues` with `parentId: "<ISSUE_ID>"`.
 
 Compare against the original list. Any new open child is a follow-up created during review.
 
@@ -469,7 +469,7 @@ If a follow-up is itself a parent (has its own children), the teammate cannot cr
 Agent(
   description: "Implement nested parent <IDENTIFIER>",
   model: "opus",
-  prompt: "Invoke /linear-workflow:implement-issue <IDENTIFIER> to implement this parent ticket
+  prompt: "Invoke /linear-workflow:implement-issue <IDENTIFIER> to implement this parent issue
   and all its children. Run to completion."
 )
 ```
@@ -485,44 +485,44 @@ PLAN_MINUTES=$((PLAN_ELAPSED / 60))
 PLAN_SECONDS=$((PLAN_ELAPSED % 60))
 ```
 
-Post a summary comment on the parent ticket via `mcp__linear-server__save_comment`:
+Post a summary comment on the parent issue via `mcp__linear-server__save_comment`:
 
 ```
 ## Plan Execution Complete
 
 Total wall clock time: <PLAN_MINUTES>m <PLAN_SECONDS>s
 
-### Sub-Tickets
+### Sub-Issues
 
 - <SUB_IDENTIFIER> <title>: MERGED | MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED
   - PR: #<PR_NUMBER>
   - Wall clock time: <minutes>m <seconds>s
   - Follow-up: <FOLLOW_UP_IDENTIFIER> (if any)
-[...repeat for each sub-ticket]
+[...repeat for each sub-issue]
 
-### Follow-Up Tickets
+### Follow-Up Issues
 
 - <FOLLOW_UP_IDENTIFIER> <title>: MERGED | ESCALATED | FAILED
   - PR: #<PR_NUMBER>
   - Wall clock time: <minutes>m <seconds>s
-[...or "No follow-up tickets were created."]
+[...or "No follow-up issues were created."]
 ```
 
-If any sub-ticket is ESCALATED or MERGED_WITH_DEFERRED_ACS, add:
+If any sub-issue is ESCALATED or MERGED_WITH_DEFERRED_ACS, add:
 
 ```
-**Action required**: Some sub-tickets need human attention before this plan can close.
+**Action required**: Some sub-issues need human attention before this plan can close.
 ```
 
 ### P8. Close Parent
 
-Check all children via `mcp__linear-server__list_issues` with `parentId: "<TICKET_ID>"`.
+Check all children via `mcp__linear-server__list_issues` with `parentId: "<ISSUE_ID>"`.
 
 **If every child is `completed` or `canceled`:**
 
 Call `mcp__linear-server__save_issue`:
 
-- `issue: "<TICKET_IDENTIFIER>"`
+- `issue: "<ISSUE_IDENTIFIER>"`
 - `state: "Done"`
 - `labels: [... existing minus "implementing"]`
 
@@ -539,7 +539,7 @@ Leave the parent in its current state. Add `needs-human-review` alongside `imple
 | Clean review, CI green, no deferred ACs | Merge, Done |
 | All findings fixed, clean re-review, CI green, no deferred ACs | Merge, Done |
 | Style-only findings after round 2, CI green, no deferred ACs | Merge, create follow-up, Done |
-| PR lists deferred ACs (any mergeable scenario) | Merge PR, but leave ticket In Progress + `needs-human-review` |
+| PR lists deferred ACs (any mergeable scenario) | Merge PR, but leave issue In Progress + `needs-human-review` |
 | CRITICAL/IMPORTANT unresolved after 2 fix rounds + final gate | Do NOT merge, `needs-human-review` |
 | CI failures unresolved after 1 fix attempt | Do NOT merge, `needs-human-review` |
 
@@ -555,11 +555,11 @@ Leave the parent in its current state. Add `needs-human-review` alongside `imple
 
 | Action | Tool | Key arguments |
 |--------|------|---------------|
-| Fetch ticket | `mcp__linear-server__get_issue` | `id` |
+| Fetch issue | `mcp__linear-server__get_issue` | `id` |
 | List children | `mcp__linear-server__list_issues` | `parentId` |
 | Update issue | `mcp__linear-server__save_issue` | `issue`, `state` / `labels` / `description` |
 | Create issue | `mcp__linear-server__save_issue` | `team`, `title`, `description` |
-| Create sub-ticket | `mcp__linear-server__save_issue` | `team`, `parentId`, `title`, `description` |
+| Create sub-issue | `mcp__linear-server__save_issue` | `team`, `parentId`, `title`, `description` |
 | Post comment | `mcp__linear-server__save_comment` | `issue`, `body` |
 | List comments | `mcp__linear-server__list_comments` | `issueId` |
 | List statuses | `mcp__linear-server__list_issue_statuses` | `team` |
