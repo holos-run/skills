@@ -1,0 +1,9 @@
+{
+  "name": "linear-sonnet",
+  "version": "2.1.0",
+  "description": "Sonnet-only variant of linear-workflow. Same skills, lower token usage — all sub-agents use Sonnet.",
+  "author": {
+    "name": "Jeff McCune"
+  },
+  "license": "MIT"
+}
