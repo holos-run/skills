@@ -1,7 +1,7 @@
 ---
 name: implement-issue
-description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.0.0
+description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
+version: 2.1.0
 ---
 
 # Implement Issue
@@ -9,7 +9,7 @@ version: 2.0.0
 Implement a Linear issue end-to-end. This skill self-detects whether the issue is a leaf issue (no children) or a parent issue (has children) and adapts its behavior:
 
 - **Leaf mode**: Branch, implement, open PR, run adversarial code review (up to 2 fix rounds), wait for CI, merge, and mark Done.
-- **Parent mode**: Orchestrate implementation of all child issues using an agent-team, track results, sweep for follow-ups, and post a summary.
+- **Parent mode**: Orchestrate implementation of all child issues by spawning a sub-agent per child (Sonnet for well-suited tasks, Opus for complex ones), track results, sweep for follow-ups, and post a summary.
 
 Implement the Linear issue **{{SKILL_INPUT}}**.
 
@@ -192,11 +192,12 @@ PR_NUMBER=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].nu
 
 **Fallback** — if no `## Code Review` section is found in project config:
 
-Spawn a Claude sub-agent for review:
+Spawn a Claude sub-agent for review (Sonnet — well-suited for adversarial review of a single PR diff):
 
 ```
 Agent(
   description: "Code review PR #$PR_NUMBER",
+  model: "sonnet",
   prompt: "You are an adversarial code reviewer. Review the diff of PR #$PR_NUMBER in $REPO.
 
 Run: gh pr diff $PR_NUMBER
@@ -388,7 +389,7 @@ Call `mcp__linear-server__save_comment` with `issue: "<ISSUE_IDENTIFIER>"` and b
 
 ## Parent Mode
 
-Orchestrator for a parent issue with children. Uses Claude Code agent-teams to dispatch each child issue to a teammate.
+Orchestrator for a parent issue with children. Uses Claude Code agents to dispatch each child issue.
 
 ### P1. Start Wall Clock Timer
 
@@ -420,23 +421,33 @@ Ensure the `implementing` label exists. Then call `mcp__linear-server__save_issu
 - `issue: "<ISSUE_IDENTIFIER>"`
 - `labels: ["implementing", ...existing labels minus "planning"]`
 
-### P4. Create Agent Team and Dispatch
+### P4. Dispatch Sub-Issues to Sub-Agents
 
-Create an agent team to process sub-issues. sub-issues are processed **sequentially** (each phase depends on the previous one).
+Process sub-issues **sequentially** (each phase depends on the previous one). For each open child, the orchestrator (this session) spawns a sub-agent via the `Agent()` tool to preserve its own context window — the sub-agent runs the full leaf lifecycle for that one sub-issue and returns a short result summary.
 
-For each open child issue, create a task in the team with a sequential dependency on the previous task and any tasks explicitly noted as blocking dependencies in the parent issue.
+**Model selection per sub-issue:**
 
-For each task, spawn a teammate (Opus) with instructions to invoke this skill on the sub-issue:
+- **Sonnet** — for sub-issues that are well-suited: focused, single-area changes (e.g., a typed wrapper, a small refactor, a config plumbing change, a doc update, mechanical test additions).
+- **Opus** — for complex sub-issues, or when it is not clear Sonnet is a good fit: cross-cutting changes, novel architecture, subtle correctness or concurrency, security-sensitive code, anything where the sub-issue's scope is ambiguous.
+
+When in doubt, pick Opus.
+
+For each sub-issue, spawn a sub-agent:
 
 ```
-Spawn a teammate to implement <SUB_IDENTIFIER>.
-The teammate should invoke /linear-workflow:implement-issue <SUB_IDENTIFIER> to implement
-the issue end-to-end. The skill handles branching, implementation, code review, CI, merge, and issue transitions. Run to completion.
+Agent(
+  description: "Implement <SUB_IDENTIFIER>",
+  model: "<sonnet | opus>",
+  prompt: "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER> to implement this sub-issue
+  end-to-end. The skill handles branching, implementation, code review, CI, merge, and issue
+  transitions. Run to completion. Return a short summary: result (MERGED |
+  MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED), PR number, and any follow-up issue identifier."
+)
 ```
 
-Wait for your teammates to complete their tasks before proceeding.
+Wait for the sub-agent to complete before spawning the next one.
 
-After each teammate completes, detect the result by checking the sub-issue's state in Linear:
+After each sub-agent completes, detect the result by checking the sub-issue's state in Linear (cross-check against the sub-agent's returned summary):
 
 | Sub-issue state | Labels | Result |
 |------------------|--------|--------|
@@ -459,11 +470,13 @@ After all original children are processed, re-list children via `mcp__linear-ser
 
 Compare against the original list. Any new open child is a follow-up created during review.
 
-Process follow-ups the same way (add tasks to the team, dispatch teammates).
+Process follow-ups the same way — spawn a sub-agent per follow-up using the model-selection rules from P4.
 
-### P6. Handle Nesting Beyond Depth 2
+### P6. Nested Parent Issues
 
-If a follow-up is itself a parent (has its own children), the teammate cannot create a nested agent-team (agent-teams don't nest). In this case, the teammate should use the `Agent()` tool to spawn a sub-agent for deeper orchestration:
+If a sub-issue or follow-up is itself a parent (has its own children), the sub-agent invoked in P4 will simply re-enter this skill in Parent Mode and orchestrate its own children with its own `Agent()` calls. Sub-agent spawning composes naturally — no special handling is needed for depth.
+
+For deeply nested parents, prefer Opus on the orchestrating sub-agent so it has headroom for planning across many children:
 
 ```
 Agent(
@@ -548,7 +561,6 @@ Leave the parent in its current state. Add `needs-human-review` alongside `imple
 - **Linear MCP**: `mcp__linear-server__*` tools configured
 - **GitHub CLI**: `gh` authenticated with repo access
 - **Git**: Clean working directory
-- **Agent teams**: `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` (for parent mode)
 - **Code review tool**: Configured in project's CLAUDE.md (optional — falls back to Claude sub-agent)
 
 ## Linear API Cheat Sheet

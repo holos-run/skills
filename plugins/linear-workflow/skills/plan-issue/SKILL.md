@@ -1,7 +1,7 @@
 ---
 name: plan-issue
 description: Create an implementation plan for a Linear issue. Use this skill when the user provides a Linear issue (URL or identifier like APP-123) and wants a plan broken into phases, with each phase tracked as a Linear sub-issue. Creates a NEW primary issue with the structured plan and relates it back to the original. Triggers on phrases like "plan this issue", "plan issue for", "break this Linear issue into phases", or any request to produce a phased plan against a Linear issue.
-version: 2.0.0
+version: 2.1.0
 ---
 
 # Plan Issue
