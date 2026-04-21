@@ -119,8 +119,8 @@ This issue is the primary implementation issue. Each phase below is tracked as a
 
 ## Implementation Instructions
 
-To implement all phases, invoke `/linear-workflow:implement-issue <PRIMARY_IDENTIFIER>`.
-To implement a single phase, invoke `/linear-workflow:implement-issue <PHASE_IDENTIFIER>`.
+To implement all phases, invoke `/linear-sonnet:implement-issue <PRIMARY_IDENTIFIER>`.
+To implement a single phase, invoke `/linear-sonnet:implement-issue <PHASE_IDENTIFIER>`.
 
 ## Original Issue
 
@@ -220,7 +220,7 @@ After all issues are created, report a summary:
 - New primary issue identifier, title, and URL
 - Each phase sub-issue identifier, title, and URL
 - Brief note on sequencing rationale
-- Reminder: use `/linear-workflow:implement-issue <PRIMARY_IDENTIFIER>` to execute the full plan
+- Reminder: use `/linear-sonnet:implement-issue <PRIMARY_IDENTIFIER>` to execute the full plan
 
 ## Key Principles
 

@@ -33,16 +33,37 @@ rather than encoding them in the plugin.
 ```bash
 claude plugin marketplace add holos-run/skills
 ```
+
+Choose a plugin based on the token usage profile you want:
+
+| Plugin | Model profile | Use case |
+| --- | --- | --- |
+| `linear-workflow` | Sonnet for focused tasks, Opus for complex ones | Best quality — default choice |
+| `linear-sonnet` | Sonnet only | Conserve weekly Opus quota |
+
 ```bash
+# Full quality (Opus + Sonnet):
 claude plugin install linear-workflow@holos-run
+
+# Sonnet-only (lower token cost):
+claude plugin install linear-sonnet@holos-run
 ```
+
+Both plugins expose identical skill names (`plan-issue`, `implement-issue`).
+Different Claude configurations install different plugins to change the token
+usage profile without changing the Linear workflow. For example, a Cyrus agent
+assigned to cost-sensitive work installs `linear-sonnet`, while one assigned to
+complex architecture work installs `linear-workflow`.
 
 ## Skills
 
-| Skill                              | Purpose                                                                                      |
-| ---------------------------------- | -------------------------------------------------------------------------------------------- |
-| `/linear-workflow:plan-issue`      | Explore codebase, create a new primary issue with phased sub-issues, relate back to original |
-| `/linear-workflow:implement-issue` | Implement any Linear issue: leaf issues directly, parent issues via agent-team orchestration |
+Both plugins expose the same skill names — swap the plugin prefix to match
+whichever plugin you installed:
+
+| Skill | Purpose |
+| --- | --- |
+| `/<plugin>:plan-issue` | Explore codebase, create a new primary issue with phased sub-issues, relate back to original |
+| `/<plugin>:implement-issue` | Implement any Linear issue: leaf issues directly, parent issues via sub-agent orchestration |
 
 ### Typical Workflow
 
@@ -52,6 +73,13 @@ claude plugin install linear-workflow@holos-run
 
 # 2. Implement — orchestrates all sub-issues under the new primary
 /linear-workflow:implement-issue APP-234
+```
+
+Or with the Sonnet-only plugin:
+
+```bash
+/linear-sonnet:plan-issue APP-123
+/linear-sonnet:implement-issue APP-234
 ```
 
 `implement-issue` self-detects whether the issue has children:

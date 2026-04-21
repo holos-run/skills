@@ -9,7 +9,7 @@ version: 2.1.0
 Implement a Linear issue end-to-end. This skill self-detects whether the issue is a leaf issue (no children) or a parent issue (has children) and adapts its behavior:
 
 - **Leaf mode**: Branch, implement, open PR, run adversarial code review (up to 2 fix rounds), wait for CI, merge, and mark Done.
-- **Parent mode**: Orchestrate implementation of all child issues by spawning a sub-agent per child (Sonnet for well-suited tasks, Opus for complex ones), track results, sweep for follow-ups, and post a summary.
+- **Parent mode**: Orchestrate implementation of all child issues by spawning a Sonnet sub-agent per child to conserve token quota, track results, sweep for follow-ups, and post a summary.
 
 Implement the Linear issue **{{SKILL_INPUT}}**.
 
@@ -425,20 +425,15 @@ Ensure the `implementing` label exists. Then call `mcp__linear-server__save_issu
 
 Process sub-issues **sequentially** (each phase depends on the previous one). For each open child, the orchestrator (this session) spawns a sub-agent via the `Agent()` tool to preserve its own context window — the sub-agent runs the full leaf lifecycle for that one sub-issue and returns a short result summary.
 
-**Model selection per sub-issue:**
-
-- **Sonnet** — for sub-issues that are well-suited: focused, single-area changes (e.g., a typed wrapper, a small refactor, a config plumbing change, a doc update, mechanical test additions).
-- **Opus** — for complex sub-issues, or when it is not clear Sonnet is a good fit: cross-cutting changes, novel architecture, subtle correctness or concurrency, security-sensitive code, anything where the sub-issue's scope is ambiguous.
-
-When in doubt, pick Opus.
+**Model selection**: All sub-agents use **Sonnet** to conserve weekly token quota. This plugin trades peak reasoning capability for cost efficiency — use the `linear-workflow` plugin instead if a sub-issue requires Opus-level reasoning.
 
 For each sub-issue, spawn a sub-agent:
 
 ```
 Agent(
   description: "Implement <SUB_IDENTIFIER>",
-  model: "<sonnet | opus>",
-  prompt: "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER> to implement this sub-issue
+  model: "sonnet",
+  prompt: "Invoke /linear-sonnet:implement-issue <SUB_IDENTIFIER> to implement this sub-issue
   end-to-end. The skill handles branching, implementation, code review, CI, merge, and issue
   transitions. Run to completion. Return a short summary: result (MERGED |
   MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED), PR number, and any follow-up issue identifier."
@@ -470,19 +465,19 @@ After all original children are processed, re-list children via `mcp__linear-ser
 
 Compare against the original list. Any new open child is a follow-up created during review.
 
-Process follow-ups the same way — spawn a sub-agent per follow-up using the model-selection rules from P4.
+Process follow-ups the same way — spawn a Sonnet sub-agent per follow-up.
 
 ### P6. Nested Parent Issues
 
 If a sub-issue or follow-up is itself a parent (has its own children), the sub-agent invoked in P4 will simply re-enter this skill in Parent Mode and orchestrate its own children with its own `Agent()` calls. Sub-agent spawning composes naturally — no special handling is needed for depth.
 
-For deeply nested parents, prefer Opus on the orchestrating sub-agent so it has headroom for planning across many children:
+For deeply nested parents, use Sonnet on the orchestrating sub-agent (consistent with this plugin's Sonnet-only policy):
 
 ```
 Agent(
   description: "Implement nested parent <IDENTIFIER>",
-  model: "opus",
-  prompt: "Invoke /linear-workflow:implement-issue <IDENTIFIER> to implement this parent issue
+  model: "sonnet",
+  prompt: "Invoke /linear-sonnet:implement-issue <IDENTIFIER> to implement this parent issue
   and all its children. Run to completion."
 )
 ```
