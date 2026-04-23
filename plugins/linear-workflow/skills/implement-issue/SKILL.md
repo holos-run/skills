@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.1.0
+version: 2.2.0
 ---
 
 # Implement Issue
@@ -153,7 +153,7 @@ EOF
 )"
 ```
 
-Use the Linear identifier — not a GitHub issue number. If this issue is a sub-issue dispatched from a parent plan, use the sub-issue identifier, not the parent.
+Use `ISSUE_IDENTIFIER` — the identifier of the issue currently being implemented. **Never add a `Fixes` line for the parent issue.** If this is a sub-issue, include only `Fixes <ISSUE_IDENTIFIER>` (the sub-issue), never `Fixes <PARENT_IDENTIFIER>`.
 
 **Deferred Acceptance Criteria section**: Include only if at least one AC from the issue was not satisfied. If every AC is addressed, omit the entire heading. Presence of this section with non-empty bullets blocks the Done transition in step L12.
 
@@ -447,7 +447,53 @@ Agent(
 
 Wait for the sub-agent to complete before spawning the next one.
 
-After each sub-agent completes, detect the result by checking the sub-issue's state in Linear (cross-check against the sub-agent's returned summary):
+#### Orchestrator Constraint: Never Take Over Implementation Work
+
+**The orchestrator must never implement sub-issue work directly.** It does not write code, create commits, create branches, or perform any leaf-mode steps itself — not even to "help" a stuck sub-agent finish. If a sub-agent fails or gets stuck, the orchestrator's only permitted response is to clean up and spawn a replacement sub-agent.
+
+#### Detecting a Stuck Sub-Agent
+
+A sub-agent has **failed to complete** if it returns without a valid result summary (MERGED | MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED) — for example, it got stuck mid-implementation and did not finish.
+
+Use a retry loop with up to **3 total attempts** per sub-issue:
+
+1. If the sub-agent's returned output does not contain a valid result summary, it got stuck.
+2. Note where it got stuck and why (e.g. "wrote files but did not commit", "opened PR but did not wait for CI").
+3. Clean up:
+   ```bash
+   git checkout main
+   git pull origin main
+   ```
+4. Spawn a replacement sub-agent with the same sub-issue identifier plus a warning. Do not describe implementation steps — just provide context and let the skill decide what to do:
+   ```
+   Agent(
+     description: "Implement <SUB_IDENTIFIER> (retry <N>)",
+     model: "<sonnet | opus>",
+     prompt: "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER>.
+
+     Warning: A previous attempt did not complete. Point: <e.g. 'wrote files but did not commit'>. Reason: <e.g. 'sub-agent returned without a result summary'>.
+
+     Invoke the skill and let it run to completion. Return a short result summary: result (MERGED | MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED), PR number, and any follow-up issue identifier."
+   )
+   ```
+5. Repeat until a valid result summary is returned or 3 attempts are exhausted.
+
+**If all 3 attempts fail to return a valid result summary:**
+
+a. Add `needs-human-review` to the sub-issue:
+   Call `mcp__linear-server__save_issue` with `issue: "<SUB_IDENTIFIER>"` and `labels: ["needs-human-review", ...existing]`.
+
+b. Add `needs-human-review` to the parent issue:
+   Call `mcp__linear-server__save_issue` with `issue: "<ISSUE_IDENTIFIER>"` and `labels: ["needs-human-review", ...existing]`.
+
+c. Post a comment on the parent issue via `mcp__linear-server__save_comment`:
+   ```
+   Sub-issue APP-123 could not be completed after 3 attempts — each attempt got stuck before finishing. Marked for human review.
+   ```
+
+d. **Abort** — stop the skill immediately. Do not process further sub-issues.
+
+After each sub-agent completes successfully, detect the result by checking the sub-issue's state in Linear (cross-check against the sub-agent's returned summary):
 
 | Sub-issue state | Labels | Result |
 |------------------|--------|--------|
