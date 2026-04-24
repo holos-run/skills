@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.2.0
+version: 2.2.1
 ---
 
 # Implement Issue
@@ -9,7 +9,7 @@ version: 2.2.0
 Implement a Linear issue end-to-end. This skill self-detects whether the issue is a leaf issue (no children) or a parent issue (has children) and adapts its behavior:
 
 - **Leaf mode**: Branch, implement, open PR, run adversarial code review (up to 2 fix rounds), wait for CI, merge, and mark Done.
-- **Parent mode**: Orchestrate implementation of all child issues by spawning a sub-agent per child (Sonnet for well-suited tasks, Opus for complex ones), track results, sweep for follow-ups, and post a summary.
+- **Parent mode**: Orchestrate implementation of all child issues with label-aware dispatch: Sonnet by default, Opus when explicitly labeled, Codex CLI when explicitly labeled, then track results, sweep for follow-ups, and post a summary.
 
 Implement the Linear issue **{{SKILL_INPUT}}**.
 
@@ -389,7 +389,7 @@ Call `mcp__linear-server__save_comment` with `issue: "<ISSUE_IDENTIFIER>"` and b
 
 ## Parent Mode
 
-Orchestrator for a parent issue with children. Uses Claude Code agents to dispatch each child issue.
+Orchestrator for a parent issue with children. Uses label-aware dispatch to route each child issue to either a Claude Code sub-agent or the Codex CLI.
 
 ### P1. Start Wall Clock Timer
 
@@ -407,6 +407,7 @@ For each child, record:
 - `id` (UUID)
 - `title`
 - `statusType` (`triage`, `backlog`, `unstarted`, `started`, `completed`, `canceled`)
+- `labels` (names, lowercased for routing)
 
 Skip any child whose status is `completed` or `canceled`.
 
@@ -421,18 +422,21 @@ Ensure the `implementing` label exists. Then call `mcp__linear-server__save_issu
 - `issue: "<ISSUE_IDENTIFIER>"`
 - `labels: ["implementing", ...existing labels minus "planning"]`
 
-### P4. Dispatch Sub-Issues to Sub-Agents
+### P4. Dispatch Sub-Issues
 
-Process sub-issues **sequentially** (each phase depends on the previous one). For each open child, the orchestrator (this session) spawns a sub-agent via the `Agent()` tool to preserve its own context window — the sub-agent runs the full leaf lifecycle for that one sub-issue and returns a short result summary.
+Process sub-issues **sequentially** (each phase depends on the previous one). Before dispatching each open child, the orchestrator (this session) must inspect that sub-issue's labels and choose the implementation runner from those labels. The dispatched worker runs the full leaf lifecycle for that one sub-issue and returns a short result summary.
 
-**Model selection per sub-issue:**
+**Dispatch selection per sub-issue:**
 
-- **Sonnet** — for sub-issues that are well-suited: focused, single-area changes (e.g., a typed wrapper, a small refactor, a config plumbing change, a doc update, mechanical test additions).
-- **Opus** — for complex sub-issues, or when it is not clear Sonnet is a good fit: cross-cutting changes, novel architecture, subtle correctness or concurrency, security-sensitive code, anything where the sub-issue's scope is ambiguous.
+- Lowercase the child label names before matching.
+- If the child has a `codex` label, use the **Codex CLI** instead of `Agent()`.
+- Else if the child has an `opus` label, spawn a Claude sub-agent with model `opus`.
+- Else if the child has a `sonnet` label, spawn a Claude sub-agent with model `sonnet`.
+- Else default to **Sonnet**.
 
-When in doubt, pick Opus.
+If conflicting routing labels are present (`codex`, `opus`, `sonnet`), prefer the most explicit non-Claude path first: `codex` > `opus` > `sonnet`.
 
-For each sub-issue, spawn a sub-agent:
+If routing selects Claude, spawn a sub-agent:
 
 ```
 Agent(
@@ -445,36 +449,60 @@ Agent(
 )
 ```
 
-Wait for the sub-agent to complete before spawning the next one.
+If routing selects Codex, run the Codex CLI directly:
+
+```bash
+codex --approval-mode full-auto --full-context \
+  "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER> to implement this sub-issue end-to-end.
+The skill handles branching, implementation, code review, CI, merge, and issue transitions.
+Run to completion. Return a short summary: result (MERGED | MERGED_WITH_DEFERRED_ACS |
+ESCALATED | FAILED), PR number, and any follow-up issue identifier."
+```
+
+Wait for the dispatched worker to complete before starting the next one.
 
 #### Orchestrator Constraint: Never Take Over Implementation Work
 
-**The orchestrator must never implement sub-issue work directly.** It does not write code, create commits, create branches, or perform any leaf-mode steps itself — not even to "help" a stuck sub-agent finish. If a sub-agent fails or gets stuck, the orchestrator's only permitted response is to clean up and spawn a replacement sub-agent.
+**The orchestrator must never implement sub-issue work directly.** It does not write code, create commits, create branches, or perform any leaf-mode steps itself — not even to "help" a stuck worker finish. If a worker fails or gets stuck, the orchestrator's only permitted response is to clean up and dispatch a replacement worker using the same routing rules.
 
-#### Detecting a Stuck Sub-Agent
+#### Detecting a Stuck Worker
 
-A sub-agent has **failed to complete** if it returns without a valid result summary (MERGED | MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED) — for example, it got stuck mid-implementation and did not finish.
+A worker has **failed to complete** if it returns without a valid result summary (MERGED | MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED) — for example, it got stuck mid-implementation and did not finish.
 
 Use a retry loop with up to **3 total attempts** per sub-issue:
 
-1. If the sub-agent's returned output does not contain a valid result summary, it got stuck.
+1. If the worker's returned output does not contain a valid result summary, it got stuck.
 2. Note where it got stuck and why (e.g. "wrote files but did not commit", "opened PR but did not wait for CI").
 3. Clean up:
    ```bash
    git checkout main
    git pull origin main
    ```
-4. Spawn a replacement sub-agent with the same sub-issue identifier plus a warning. Do not describe implementation steps — just provide context and let the skill decide what to do:
+4. Re-check the sub-issue's labels, then dispatch a replacement worker with the same sub-issue identifier plus a warning. Do not describe implementation steps — just provide context and let the skill decide what to do.
+
+   If the route is Claude:
    ```
    Agent(
      description: "Implement <SUB_IDENTIFIER> (retry <N>)",
      model: "<sonnet | opus>",
      prompt: "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER>.
 
-     Warning: A previous attempt did not complete. Point: <e.g. 'wrote files but did not commit'>. Reason: <e.g. 'sub-agent returned without a result summary'>.
+     Warning: A previous attempt did not complete. Point: <e.g. 'wrote files but did not commit'>. Reason: <e.g. 'worker returned without a result summary'>.
 
      Invoke the skill and let it run to completion. Return a short result summary: result (MERGED | MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED), PR number, and any follow-up issue identifier."
    )
+   ```
+
+   If the route is Codex:
+   ```bash
+   codex --approval-mode full-auto --full-context \
+     "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER>.
+
+Warning: A previous attempt did not complete. Point: <e.g. 'wrote files but did not commit'>.
+Reason: <e.g. 'worker returned without a result summary'>.
+
+Invoke the skill and let it run to completion. Return a short result summary: result (MERGED |
+MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED), PR number, and any follow-up issue identifier."
    ```
 5. Repeat until a valid result summary is returned or 3 attempts are exhausted.
 
@@ -493,7 +521,7 @@ c. Post a comment on the parent issue via `mcp__linear-server__save_comment`:
 
 d. **Abort** — stop the skill immediately. Do not process further sub-issues.
 
-After each sub-agent completes successfully, detect the result by checking the sub-issue's state in Linear (cross-check against the sub-agent's returned summary):
+After each worker completes successfully, detect the result by checking the sub-issue's state in Linear (cross-check against the worker's returned summary):
 
 | Sub-issue state | Labels | Result |
 |------------------|--------|--------|
@@ -516,22 +544,13 @@ After all original children are processed, re-list children via `mcp__linear-ser
 
 Compare against the original list. Any new open child is a follow-up created during review.
 
-Process follow-ups the same way — spawn a sub-agent per follow-up using the model-selection rules from P4.
+Process follow-ups the same way — dispatch one worker per follow-up using the label-routing rules from P4.
 
 ### P6. Nested Parent Issues
 
-If a sub-issue or follow-up is itself a parent (has its own children), the sub-agent invoked in P4 will simply re-enter this skill in Parent Mode and orchestrate its own children with its own `Agent()` calls. Sub-agent spawning composes naturally — no special handling is needed for depth.
+If a sub-issue or follow-up is itself a parent (has its own children), the dispatched worker invoked in P4 will simply re-enter this skill in Parent Mode and orchestrate its own children with the same label-routing rules. Nested orchestration composes naturally — no special handling is needed for depth beyond re-checking labels at each parent.
 
-For deeply nested parents, prefer Opus on the orchestrating sub-agent so it has headroom for planning across many children:
-
-```
-Agent(
-  description: "Implement nested parent <IDENTIFIER>",
-  model: "opus",
-  prompt: "Invoke /linear-workflow:implement-issue <IDENTIFIER> to implement this parent issue
-  and all its children. Run to completion."
-)
-```
+By default, nested parent orchestrators should also run on **Sonnet**. Use **Opus** only when the nested parent issue is explicitly labeled `opus`; use **Codex CLI** when it is explicitly labeled `codex`.
 
 ### P7. Post Summary
 
@@ -608,6 +627,7 @@ Leave the parent in its current state. Add `needs-human-review` alongside `imple
 - **GitHub CLI**: `gh` authenticated with repo access
 - **Git**: Clean working directory
 - **Code review tool**: Configured in project's CLAUDE.md (optional — falls back to Claude sub-agent)
+- **Codex CLI**: Required only for sub-issues labeled `codex`
 
 ## Linear API Cheat Sheet
 
