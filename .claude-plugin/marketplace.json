@@ -16,7 +16,7 @@
     {
       "name": "linear-sonnet",
       "source": "./plugins/linear-sonnet",
-      "description": "Sonnet-only variant of linear-workflow. Same skill names, lower token usage.",
+      "description": "Sonnet-only variant of linear-workflow. Same plan and implement workflow skills, lower token usage.",
       "version": "2.2.0"
     }
   ]
