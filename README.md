@@ -22,9 +22,11 @@ present, precedence is: `codex` > `opus` > `sonnet`.
 
 ## What This Does
 
-This plugin provides two skills that drive an **adversarial
-plan-implement-review cycle**. Linear is the source of truth for work; code
-ships through GitHub PRs. The cycle works like this:
+This plugin provides workflow skills that drive an **adversarial
+plan-implement-review cycle**, plus targeted `holos-console` frontend skills
+for dense resource UI and TanStack server-state work. Linear is the source of
+truth for workflow-managed implementation; code ships through GitHub PRs. The
+cycle works like this:
 
 1. A feature is described as a **Linear issue**.
 2. **Plan** — An agent explores the codebase, creates a new primary issue with a structured plan and phased sub-issues, then marks the original issue Done.
@@ -56,6 +58,8 @@ claude plugin install linear-workflow@holos-run
 | --- | --- |
 | `/linear-workflow:plan-issue` | Explore codebase, create a new primary issue with phased sub-issues, relate back to original |
 | `/linear-workflow:implement-issue` | Implement any Linear issue: leaf issues directly, parent issues via sub-agent orchestration |
+| `/linear-workflow:enterprise-k8s-frontend` | Build dense operator-facing Vite + React resource list/detail workflows in `holos-console` using TanStack Router/Query/Table, ResourceGrid, shadcn/Tailwind, and ConnectRPC |
+| `/linear-workflow:tanstack-query-and-grid` | Implement or refactor TanStack Query hooks, key factories, mutations, invalidation, and ResourceGrid toolbar/search/filter/sort server-state coordination |
 
 ### Typical Workflow
 
