@@ -3,18 +3,21 @@
   "owner": {
     "name": "Open Infrastructure Services LLC"
   },
+  "metadata": {
+    "description": "Claude Code plugins from holos-run for Linear workflow automation and holos-console implementation guidance."
+  },
   "plugins": [
     {
       "name": "linear-workflow",
       "source": "./plugins/linear-workflow",
-      "description": "Tight orchestration loop for plan, implement, and review when developing with GitHub + Linear + Slack.",
-      "version": "2026.4.20"
+      "description": "Tight orchestration loop for plan, implement, and review, plus holos-console frontend implementation skills.",
+      "version": "2.4.0"
     },
     {
       "name": "linear-sonnet",
       "source": "./plugins/linear-sonnet",
       "description": "Sonnet-only variant of linear-workflow. Same skill names, lower token usage.",
-      "version": "2026.4.20"
+      "version": "2.2.0"
     }
   ]
 }
