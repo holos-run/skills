@@ -175,7 +175,7 @@ Example from a project's CLAUDE.md:
 ## Code Review
 
 ```bash
-codex --approval-mode full-auto --full-context \
+codex --approval-mode full-auto --full-auto \
   "Review PR #$PR_NUMBER on branch $BRANCH in $REPO. \
    Report findings as [CRITICAL], [IMPORTANT], or [STYLE]. \
    Respond with APPROVE or REQUEST_CHANGES."
