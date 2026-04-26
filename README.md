@@ -180,7 +180,7 @@ Add this to your project's `CLAUDE.md`:
 ## Code Review
 
 ```bash
-codex --approval-mode full-auto --full-context \
+codex --approval-mode full-auto --full-auto \
   "Review PR #$PR_NUMBER on branch $BRANCH in $REPO. \
    Focus on: security vulnerabilities, correctness bugs, error handling, \
    race conditions, missing validation, and test coverage gaps. \

@@ -1,6 +1,6 @@
 {
   "name": "linear-sonnet",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Sonnet-only variant of linear-workflow. Same plan and implement workflow skills, lower token usage — all sub-agents use Sonnet.",
   "author": {
     "name": "Jeff McCune"

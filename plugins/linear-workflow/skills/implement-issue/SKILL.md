@@ -175,7 +175,7 @@ Example from a project's CLAUDE.md:
 ## Code Review
 
 ```bash
-codex --approval-mode full-auto --full-context \
+codex --approval-mode full-auto --full-auto \
   "Review PR #$PR_NUMBER on branch $BRANCH in $REPO. \
    Report findings as [CRITICAL], [IMPORTANT], or [STYLE]. \
    Respond with APPROVE or REQUEST_CHANGES."
@@ -452,7 +452,7 @@ Agent(
 If routing selects Codex, run the Codex CLI directly:
 
 ```bash
-codex --dangerously-bypass-approvals-and-sandbox --full-context \
+codex --dangerously-bypass-approvals-and-sandbox --full-auto \
   "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER> to implement this sub-issue end-to-end.
 The skill handles branching, implementation, code review, CI, merge, and issue transitions.
 Run to completion. Return a short summary: result (MERGED | MERGED_WITH_DEFERRED_ACS |
@@ -495,7 +495,7 @@ Use a retry loop with up to **3 total attempts** per sub-issue:
 
    If the route is Codex:
    ```bash
-   codex --dangerously-bypass-approvals-and-sandbox --full-context \
+   codex --dangerously-bypass-approvals-and-sandbox --full-auto \
      "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER>.
 
 Warning: A previous attempt did not complete. Point: <e.g. 'wrote files but did not commit'>.
