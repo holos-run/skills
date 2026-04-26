@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.3.1
+version: 2.4.0
 ---
 
 # Implement Issue
@@ -42,6 +42,49 @@ Record:
 - `TEAM_KEY` — e.g., `APP`
 - `EXISTING_LABELS`
 - `PARENT_IDENTIFIER` — if present, note it (this issue may be part of an implementation plan)
+
+### 1a. Check for Blocking Issues
+
+Before entering any implementation mode, check whether the issue is blocked by other open issues.
+
+Call `mcp__linear-server__get_issue` with `id: "<ISSUE_ID>"` and inspect the response for blocking relations. Linear returns these as a `relations` array; each entry has a `type` field (`"blocked_by"` or `"blocks"`) and a `relatedIssue` object.
+
+Collect every related issue whose type indicates it **blocks** the current issue (type is `"blocked_by"`, `"blocking"`, or equivalent as returned by the API). For each, record:
+
+- `BLOCKER_IDENTIFIER` — e.g., `APP-99`
+- `BLOCKER_ID` — UUID
+- `BLOCKER_TITLE`
+- `BLOCKER_STATUS_TYPE` — `triage`, `backlog`, `unstarted`, `started`, `completed`, or `canceled`
+
+Filter to **active blockers**: those whose `BLOCKER_STATUS_TYPE` is NOT `completed` and NOT `canceled`.
+
+**If active blockers exist:**
+
+1. Post a comment on the issue via `mcp__linear-server__save_comment`:
+
+   ```
+   This issue is blocked by the following open issues and cannot be implemented yet:
+
+   - <BLOCKER_IDENTIFIER>: <BLOCKER_TITLE> (status: <status>)
+   [... one line per active blocker]
+
+   Waiting for all blockers to reach Done or Canceled before proceeding.
+   ```
+
+2. **Poll until unblocked.** Repeat the following loop until all active blockers are resolved:
+
+   a. Wait 60 seconds (`sleep 60`).
+   b. For each remaining active blocker, call `mcp__linear-server__get_issue` with `id: "<BLOCKER_ID>"` and read its `statusType`.
+   c. Remove any blocker from the active list whose `statusType` is now `completed` or `canceled`.
+   d. If the active list is empty, break out of the loop.
+
+3. After the loop exits (all blockers resolved), post a follow-up comment via `mcp__linear-server__save_comment`:
+
+   ```
+   All blocking issues are now Done or Canceled. Proceeding with implementation.
+   ```
+
+**If no active blockers:** continue immediately to step 2.
 
 ### 2. Check for Children
 
@@ -633,7 +676,7 @@ Leave the parent in its current state. Add `needs-human-review` alongside `imple
 
 | Action | Tool | Key arguments |
 |--------|------|---------------|
-| Fetch issue | `mcp__linear-server__get_issue` | `id` |
+| Fetch issue (incl. blocking relations) | `mcp__linear-server__get_issue` | `id` |
 | List children | `mcp__linear-server__list_issues` | `parentId` |
 | Update issue | `mcp__linear-server__save_issue` | `issue`, `state` / `labels` / `description` |
 | Create issue | `mcp__linear-server__save_issue` | `team`, `title`, `description` |
