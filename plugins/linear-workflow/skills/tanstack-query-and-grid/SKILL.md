@@ -1,7 +1,7 @@
 ---
 name: tanstack-query-and-grid
 description: Implement or refactor TanStack Query and TanStack Table grid behavior in holos-console. Use for query hooks, query key factories, mutation invalidation, ResourceGrid toolbar/search/filter/sort URL state, keepPreviousData, server-state coordination, and grid list cache behavior. Do not use for Go backend changes, protobuf schema work, or unrelated visual design.
-version: 1.0.0
+version: 1.1.0
 ---
 
 # TanStack Query And Grid
@@ -40,6 +40,9 @@ Preserve the existing frontend stack and state boundaries:
 - Use TanStack Query for server state and cache invalidation.
 - Use TanStack Table through ResourceGrid for dense resource tables.
 - Use shadcn/Radix primitives, Tailwind, and lucide icons for UI controls.
+- Use the `shadcn/ui` assistant skill for all shadcn component work. It must be
+  installed with `npx skills add shadcn/ui` so agents receive project context,
+  component docs, CLI guidance, and composition rules.
 - Use ConnectRPC through existing transport/query modules.
 - Do not add ad-hoc query-key arrays outside the key factory module.
 
@@ -57,27 +60,31 @@ Source docs to read first:
    modules, mutation hooks, or invalidation behavior.
 3. Read `docs/agents/data-grid-architecture.md` before changing ResourceGrid
    rows, toolbar state, filter/sort state, action cells, or table columns.
-4. Start with `frontend/src/queries/keys.ts`. Every hand-written query key and
+4. If the work adds, updates, composes, or debugs shadcn UI controls, use the
+   `shadcn/ui` skill workflow first: inspect `components.json` project context,
+   run the correct package-runner form of `shadcn info`, and fetch component
+   docs with `shadcn docs <component>` before coding against component APIs.
+5. Start with `frontend/src/queries/keys.ts`. Every hand-written query key and
    invalidation call must use `keys.<resource>.<scope>(...)` or a documented
    prefix factory.
-5. Keep transport and client creation inside query hooks. Routes and components
+6. Keep transport and client creation inside query hooks. Routes and components
    should call hooks instead of constructing ConnectRPC clients directly.
-6. Gate read hooks with authentication and all required identifiers. For
+7. Gate read hooks with authentication and all required identifiers. For
    optional reads, combine caller intent with the same auth/identifier guard.
-7. In mutation hooks, invalidate the smallest cache scope that refreshes every
+8. In mutation hooks, invalidate the smallest cache scope that refreshes every
    visible stale surface. Keep navigation and toast copy in the caller.
-8. Use `placeholderData: keepPreviousData` for list-style ResourceGrid reads
+9. Use `placeholderData: keepPreviousData` for list-style ResourceGrid reads
    when stale rows are less disruptive than blanking the table during route or
    search-param changes. Do not use it for sensitive detail payloads.
-9. Keep client-only grid search, kind filters, and sort state in TanStack Router
+10. Keep client-only grid search, kind filters, and sort state in TanStack Router
    search params. Add server-used filters to query keys.
-10. Preserve row navigation rules: `detailHref` for named resources with detail
+11. Preserve row navigation rules: `detailHref` for named resources with detail
     pages, TanStack Router `Link` for in-app cells, and `stopPropagation()` for
     row action controls.
-11. Add focused tests at the lowest useful boundary: query-hook tests for cache
+12. Add focused tests at the lowest useful boundary: query-hook tests for cache
     and invalidation behavior, ResourceGrid tests for shared table behavior,
     and route tests for page-specific mapping and mocked query hooks.
-12. Run the repo's documented checks, normally `make test-ui` and any lint or
+13. Run the repo's documented checks, normally `make test-ui` and any lint or
     build target required by `CLAUDE.md` or `AGENTS.md`.
 
 ## Anti-Patterns

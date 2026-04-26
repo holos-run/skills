@@ -4,6 +4,33 @@ Claude Code plugin for planning and implementing software with Linear and
 GitHub.  Intended to work equally well with vanilla claude code running locally
 or as a self hosted Linear Agent driving the claude code sdk command line tool.
 
+## Quick Start
+
+Install the required assistant dependencies first:
+
+```bash
+npx skills add shadcn/ui
+```
+
+Then install this plugin:
+
+```bash
+claude plugin install linear-workflow@holos-run
+```
+
+Enable agent teams for parent issue orchestration:
+
+```bash
+claude config set -g env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS 1
+```
+
+Run the normal plan/implement loop:
+
+```bash
+/linear-workflow:plan-issue APP-123
+/linear-workflow:implement-issue APP-234
+```
+
 ## Model Selection via Labels
 
 Label any Linear sub-issue to control which model implements it:
@@ -78,6 +105,10 @@ claude plugin install linear-workflow@holos-run
 
 ## Prerequisites
 
+- **shadcn/ui assistant skill** installed with `npx skills add shadcn/ui`.
+  The `enterprise-k8s-frontend` and `tanstack-query-and-grid` skills rely on
+  it for current shadcn project context, component docs, CLI behavior, and
+  composition rules.
 - **Linear MCP server** configured (see below)
 - **GitHub CLI** (`gh`) authenticated with repo access
 - **Git** with a clean working directory

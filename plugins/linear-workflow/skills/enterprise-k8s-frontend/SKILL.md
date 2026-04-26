@@ -1,7 +1,7 @@
 ---
 name: enterprise-k8s-frontend
 description: Build or refactor dense operator-facing Kubernetes frontend workflows in holos-console. Use for resource list/detail views, create/edit/delete flows, route-backed filters, ResourceGrid pages, selected organization/project context, and ConnectRPC-backed React UI work. Do not use for Go backend changes, protobuf API design, cluster runtime logic, infrastructure, or marketing pages.
-version: 1.0.0
+version: 1.1.0
 ---
 
 # Enterprise Kubernetes Frontend
@@ -39,6 +39,9 @@ Keep frontend work inside the existing Vite application:
 - Use TanStack Table through the shared ResourceGrid patterns for dense lists.
 - Use shadcn/Radix primitives, Tailwind, and lucide icons; do not introduce a
   second component system.
+- Use the `shadcn/ui` assistant skill for all shadcn component work. It must be
+  installed with `npx skills add shadcn/ui` so agents receive project context,
+  component docs, CLI guidance, and composition rules.
 - Use ConnectRPC through the existing transport provider and query modules.
 - Do not edit generated route tree files by hand.
 
@@ -56,24 +59,28 @@ Source docs to read first:
    selected-entity, ConnectRPC, and build/test constraints that apply.
 3. If the work adds or changes a dense resource list, read
    `docs/agents/data-grid-architecture.md` before touching components.
-4. Locate the owning route under `frontend/src/routes/`, the query hook under
+4. If the work adds, updates, composes, or debugs shadcn components, use the
+   `shadcn/ui` skill workflow first: inspect `components.json` project context,
+   run the correct package-runner form of `shadcn info`, and fetch component
+   docs with `shadcn docs <component>` before coding against component APIs.
+5. Locate the owning route under `frontend/src/routes/`, the query hook under
    `frontend/src/queries/`, and any shared UI primitive under
    `frontend/src/components/`.
-5. Keep route params authoritative over selected-entity stores. Sync URL params
+6. Keep route params authoritative over selected-entity stores. Sync URL params
    into stores from layout routes only; creation pages may read fallback stores
    but must not write selected org/project state.
-6. Use TanStack Router search params for user-visible filter, search, sort, and
+7. Use TanStack Router search params for user-visible filter, search, sort, and
    navigation state. Preserve `returnTo` behavior with
    `buildReturnTo()` / `resolveReturnTo()` where create flows return to a
    caller page.
-7. Map API objects into stable UI row/view models at the route or feature
+8. Map API objects into stable UI row/view models at the route or feature
    boundary. Keep ResourceGrid rows compact, scan-friendly, and navigable with
    `detailHref` when a detail page exists.
-8. Stop event propagation from row action buttons before opening menus,
+9. Stop event propagation from row action buttons before opening menus,
    dialogs, or editors.
-9. Add route-level tests for new pages. Mock `@/queries/*` modules rather than
+10. Add route-level tests for new pages. Mock `@/queries/*` modules rather than
    mocking ConnectRPC clients directly at route boundaries.
-10. Run the repo's documented frontend checks, normally `make test-ui` and any
+11. Run the repo's documented frontend checks, normally `make test-ui` and any
     lint/build command required by `CLAUDE.md` or `AGENTS.md`.
 
 ## Anti-Patterns
