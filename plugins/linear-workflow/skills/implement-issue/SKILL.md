@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.4.0
+version: 2.5.0
 ---
 
 # Implement Issue
@@ -469,6 +469,46 @@ Ensure the `implementing` label exists. Then call `mcp__linear-server__save_issu
 
 Process sub-issues **sequentially** (each phase depends on the previous one). Before dispatching each open child, the orchestrator (this session) must inspect that sub-issue's labels and choose the implementation runner from those labels. The dispatched worker runs the full leaf lifecycle for that one sub-issue and returns a short result summary.
 
+#### Pre-Dispatch: Detect and Discard Partial Work
+
+Before choosing a runner for each sub-issue, check for leftover state from any prior attempt. Partial work is present when a local branch, remote branch, or open PR exists for the sub-issue.
+
+Derive the branch prefix from the sub-issue identifier in lowercase (e.g., `app-123` → prefix `feat/app-123-`):
+
+```bash
+SUB_PREFIX="feat/<sub-identifier-lowercased>-"
+SUB_BRANCH=$(git branch --list "${SUB_PREFIX}*" | head -1 | xargs)
+SUB_OPEN_PR=$(gh pr list --state open \
+  --json number,headRefName \
+  --jq ".[] | select(.headRefName | startswith(\"${SUB_PREFIX}\")) | .number" \
+  | head -1)
+```
+
+If partial work exists (`SUB_BRANCH` or `SUB_OPEN_PR` is non-empty):
+
+1. Close the open PR without merging (if one exists):
+   ```bash
+   gh pr close "$SUB_OPEN_PR" --comment "Discarding partial work — restarting implementation from scratch." 2>/dev/null || true
+   ```
+2. Delete the remote branch:
+   ```bash
+   git push origin --delete "$SUB_BRANCH" 2>/dev/null || true
+   ```
+3. Delete the local branch:
+   ```bash
+   git branch -D "$SUB_BRANCH" 2>/dev/null || true
+   ```
+4. Return to a clean main:
+   ```bash
+   git checkout main && git pull origin main
+   ```
+5. Reset the sub-issue to its unstarted state and remove the `implementing` label:
+   Call `mcp__linear-server__save_issue` with `issue: "<SUB_IDENTIFIER>"`, `state: "<unstarted-type state>"`, removing `implementing` from labels.
+6. Post a comment on the sub-issue via `mcp__linear-server__save_comment`:
+   ```
+   Discarding partial work from a previous attempt. Starting a clean implementation.
+   ```
+
 **Dispatch selection per sub-issue:**
 
 - Lowercase the child label names before matching.
@@ -503,6 +543,25 @@ ESCALATED | FAILED), PR number, and any follow-up issue identifier."
 ```
 
 Wait for the dispatched worker to complete before starting the next one.
+
+#### Handling Usage Limits
+
+Usage limits apply when a runner's output indicates capacity is exhausted — for example output containing phrases like "usage limit reached", "rate limit exceeded", "quota exceeded", or "you have reached your usage limit" — without returning a valid implementation result (`MERGED | MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED`). Do not count usage-limit events as stuck-worker retry attempts.
+
+**If Codex hits a usage limit:**
+
+1. Do not increment the retry counter.
+2. Switch the runner for this sub-issue to **Opus** and dispatch a Claude sub-agent with `model: "opus"` using the same sub-issue identifier and prompt.
+
+**If Opus hits a usage limit (either as the primary route or as a Codex fallback):**
+
+1. Do not increment the retry counter.
+2. Parse the earliest "retry after" time from all usage-limit messages (e.g., "available again at HH:MM UTC", "retry in N minutes", "resets at HH:MM"). Convert to seconds until that time.
+3. If no retry time is parseable, default to 15 minutes (`900` seconds).
+4. Wait (`sleep <seconds_until_retry>`) — do not prompt the user.
+5. Re-dispatch the sub-issue using its original routing label selection (Codex if labeled `codex`, otherwise Opus, otherwise Sonnet).
+
+Never prompt the user for guidance on usage limits — resolve autonomously.
 
 #### Orchestrator Constraint: Never Take Over Implementation Work
 
