@@ -1,7 +1,7 @@
 ---
 name: plan-issue
 description: Create an implementation plan for a Linear issue. Use this skill when the user provides a Linear issue (URL or identifier like APP-123) and wants a plan broken into phases, with each phase tracked as a Linear sub-issue. Creates a NEW primary issue with the structured plan and relates it back to the original. Triggers on phrases like "plan this issue", "plan issue for", "break this Linear issue into phases", or any request to produce a phased plan against a Linear issue.
-version: 2.1.0
+version: 2.2.0
 ---
 
 # Plan Issue
@@ -131,7 +131,19 @@ If the original issue had a non-empty body, preserve it in the `## Problem` sect
 
 ### 8. Create Sub-Issues for Each Phase
 
-For each phase, create a Linear sub-issue as a child of the new primary issue. Call `mcp__linear-server__save_issue` with:
+For each phase, create a Linear sub-issue as a child of the new primary issue.
+
+**Determine `<REPO_NAME>` once** before creating any sub-issues by running `gh repo view --json name -q .name` from the project's working directory. This is the value Cyrus's `RepositoryRouter` matches against — it must match the repository entry in the operator's Cyrus config.
+
+Each sub-issue's description **must begin** with a Cyrus base-branch override tag on its very first line:
+
+```
+[repo=<REPO_NAME>#main]
+```
+
+This tag opts the sub-issue out of Cyrus's parent-as-base routing (`determineBaseBranch` priority `parent-issue` rule) and forces its worktree to branch from `main` (priority-0 `commit-ish` override). Without this tag, Cyrus would create the sub-issue's worktree branched off the parent issue's branch, which prevents independent per-phase PRs.
+
+Call `mcp__linear-server__save_issue` with:
 
 - `team: "<TEAM_KEY>"`
 - `parentId: "<PRIMARY_ID>"`
@@ -139,6 +151,8 @@ For each phase, create a Linear sub-issue as a child of the new primary issue. C
 - `description`:
 
 ```markdown
+[repo=<REPO_NAME>#main]
+
 ## Parent
 
 Part of <PRIMARY_IDENTIFIER>
@@ -232,6 +246,7 @@ After all issues are created, report a summary:
 - **Native parent/child**: Sub-issues use Linear's `parentId` under the new primary issue.
 - **Self-contained phases**: Each phase leaves the codebase compiling and tests passing.
 - **Cleanup phase**: Every plan ends with a cleanup phase.
+- **Per-sub-issue base-branch override**: Every sub-issue description starts with `[repo=<REPO_NAME>#main]` so each phase's worktree is branched off `main`, not the parent issue's branch.
 
 ## Linear API Cheat Sheet
 
