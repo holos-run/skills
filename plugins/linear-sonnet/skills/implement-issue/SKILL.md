@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.2.0
+version: 2.2.1
 ---
 
 # Implement Issue
@@ -175,7 +175,7 @@ Example from a project's CLAUDE.md:
 ## Code Review
 
 ```bash
-codex --approval-mode full-auto --full-auto \
+codex exec --dangerously-bypass-approvals-and-sandbox \
   "Review PR #$PR_NUMBER on branch $BRANCH in $REPO. \
    Report findings as [CRITICAL], [IMPORTANT], or [STYLE]. \
    Respond with APPROVE or REQUEST_CHANGES."
