@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.5.1
+version: 2.5.2
 ---
 
 # Implement Issue
@@ -206,7 +206,63 @@ Run adversarial code review on the PR. Up to 2 fix rounds, then a final gate che
 
 #### L8a. Resolve the Review Command
 
-Look in the project's `CLAUDE.md` or `AGENTS.md` for a section headed `## Code Review` that contains a fenced code block with a shell command. The command is a template with these variables:
+Choose the reviewer based on the issue's labels (recorded as `EXISTING_LABELS` in step 1), then resolve the review command. Lowercase label names before matching.
+
+Detect variables (used by all paths below):
+
+```bash
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+PR_NUMBER=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].number')
+```
+
+**Reviewer selection (in priority order):**
+
+1. **Issue labeled `codex`** → use the Codex CLI reviewer (see "Codex reviewer" below). Do NOT silently downgrade to a Claude sub-agent — if Codex is unavailable, escalate.
+2. **Issue labeled `opus`** → use a Claude sub-agent with `model: "opus"` (see "Claude sub-agent reviewer").
+3. **Issue labeled `sonnet`** → use a Claude sub-agent with `model: "sonnet"`.
+4. **No routing label, project's `CLAUDE.md` or `AGENTS.md` contains a `## Code Review` section** with a fenced shell command → use that command.
+5. **No routing label and no project config** → fall back to a Claude sub-agent on `sonnet`.
+
+If conflicting routing labels are present, prefer in this order: `codex` > `opus` > `sonnet`.
+
+**Codex reviewer (when issue is labeled `codex`):**
+
+First verify the Codex CLI is on `PATH`:
+
+```bash
+command -v codex >/dev/null
+```
+
+If `codex` is not found, do NOT fall back to a Claude sub-agent. Instead, surface an explicit error and escalate per L8d:
+
+- Post a comment on the PR explaining that the issue is labeled `codex` but the `codex` CLI is unavailable in this environment, so review cannot proceed with the requested reviewer.
+- Add the `needs-human-review` label to the PR and the Linear issue.
+- Skip to step L13 with result `ESCALATED`.
+
+If `codex` is available, run:
+
+```bash
+codex exec --dangerously-bypass-approvals-and-sandbox \
+  "You are an adversarial code reviewer. Review the diff of PR #$PR_NUMBER in $REPO on branch $BRANCH.
+
+Run: gh pr diff $PR_NUMBER
+
+Examine every changed file. Report findings using these severity levels:
+- [CRITICAL] — security vulnerabilities, data loss, crashes, correctness bugs
+- [IMPORTANT] — error handling gaps, race conditions, missing validation, test gaps
+- [STYLE] — naming, formatting, dead code, minor improvements
+
+At the end, state your verdict:
+- APPROVE — if no critical or important findings
+- REQUEST_CHANGES — if any critical or important findings exist
+
+List each finding with file path, line number, severity, and description."
+```
+
+**Project-configured reviewer (no routing label, but project config provides a command):**
+
+The project's `CLAUDE.md` or `AGENTS.md` may contain a section headed `## Code Review` with a fenced code block. The command is a template with these variables:
 
 - `$PR_NUMBER` — the PR number
 - `$BRANCH` — the current branch name
@@ -225,22 +281,16 @@ codex exec --dangerously-bypass-approvals-and-sandbox \
 ```
 </pre>
 
-If found, use that command. Detect the variables:
+If found, use that command verbatim with the variables above.
 
-```bash
-REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-PR_NUMBER=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].number')
-```
+**Claude sub-agent reviewer (default fallback or explicit `sonnet`/`opus` label):**
 
-**Fallback** — if no `## Code Review` section is found in project config:
-
-Spawn a Claude sub-agent for review (Sonnet — well-suited for adversarial review of a single PR diff):
+Spawn a Claude sub-agent for review:
 
 ```
 Agent(
   description: "Code review PR #$PR_NUMBER",
-  model: "sonnet",
+  model: "<sonnet | opus>",
   prompt: "You are an adversarial code reviewer. Review the diff of PR #$PR_NUMBER in $REPO.
 
 Run: gh pr diff $PR_NUMBER
