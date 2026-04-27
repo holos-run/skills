@@ -463,42 +463,19 @@ Define `IDENT_LC` as `ISSUE_IDENTIFIER` lowercased (e.g., `HOL-1061` → `hol-10
    If the rebase succeeds with dropped commits (commits that already landed on `origin/main` via merged PRs), that is the desired behavior — those phases are already complete and must not be re-implemented.
 
    If the rebase fails due to conflicts:
-   - Run `git rebase --abort`.
+   - **Before** running `git rebase --abort`, capture the conflicting paths while the rebase is still in progress:
+     ```bash
+     CONFLICTS=$(git diff --name-only --diff-filter=U)
+     ```
+   - Then run `git rebase --abort`.
    - Ensure the `needs-human-review` label exists for the team (create via `mcp__linear-server__create_issue_label` if missing).
-   - Post a comment on the issue listing the conflicting paths from the rebase output.
+   - Post a comment on the issue listing the captured conflicting paths from `$CONFLICTS`.
    - Add `needs-human-review` to the issue and stop the skill.
 
 ### P1. Start Wall Clock Timer
 
 ```bash
 PLAN_START_TIME=$(date +%s)
-```
-
-### P1a. Review Existing Progress
-
-After the rebase, inspect the diff between `origin/main` and `HEAD` to detect work already implemented in this branch from a prior orchestrator session. The orchestrator **must not** re-implement what already landed on `main` or what already exists as commits on the primary issue branch.
-
-```bash
-git log --oneline origin/main..HEAD
-git diff --stat origin/main..HEAD
-```
-
-For each sub-issue (from the children list in P2), classify it as **already-implemented** when either of the following holds:
-
-- Its Linear status is `completed` or `canceled` — the rebase has already incorporated any merged work from `origin/main`, so nothing remains to do.
-- A commit message on the primary issue branch (`origin/main..HEAD`) references the sub-issue's identifier — for example, `feat(...): … Refs: APP-301` or any commit subject/body that includes the identifier in the form `<TEAM>-<NUMBER>`. This indicates a prior orchestrator session committed work for that sub-issue without merging.
-
-Build a `SKIP_SUB_ISSUES` set containing every already-implemented sub-issue identifier. The dispatch step (P4) **must consult `SKIP_SUB_ISSUES` and skip any sub-issue in it** — do not dispatch a worker for those identifiers and do not delete their existing branch state.
-
-Post a brief comment on the parent issue summarizing the resume state:
-
-```
-## Resuming orchestration on rebased branch
-
-- Branch: <current-branch>
-- Commits ahead of origin/main: <N>
-- Already-implemented sub-issues (skipped): <list of identifiers, or "none">
-- Remaining sub-issues: <list of identifiers>
 ```
 
 ### P2. List Children
@@ -517,6 +494,33 @@ Skip any child whose status is `completed` or `canceled`.
 
 If no open children remain, post a comment that all work is complete and stop.
 
+### P2a. Review Existing Progress
+
+After listing children in P2, inspect the diff between `origin/main` and `HEAD` to detect work already implemented in this branch from a prior orchestrator session. The orchestrator **must not** re-implement what already landed on `main` or what already exists as commits on the primary issue branch.
+
+```bash
+git log --oneline origin/main..HEAD
+git diff --stat origin/main..HEAD
+```
+
+Classify each open sub-issue from P2 as **already-implemented** when either of the following holds:
+
+- Its Linear status is `completed` or `canceled` — the rebase has already incorporated any merged work from `origin/main`, so nothing remains to do. (P2 already filters these out, but list them in the resume comment for visibility.)
+- A commit message on the primary issue branch (`origin/main..HEAD`) references the sub-issue's identifier — for example, `feat(...): … Refs: APP-301` or any commit subject/body that includes the identifier in the form `<TEAM>-<NUMBER>`. This indicates a prior orchestrator session committed work for that sub-issue without merging.
+
+Build a `SKIP_SUB_ISSUES` set containing every already-implemented sub-issue identifier. The dispatch step (P4) **must consult `SKIP_SUB_ISSUES` and skip any sub-issue in it** — do not dispatch a worker for those identifiers and do not delete their existing branch state.
+
+Post a brief comment on the parent issue summarizing the orchestration state:
+
+```
+## Orchestration state
+
+- Branch: <current-branch>
+- Commits ahead of origin/main: <N>
+- Already-implemented sub-issues (skipped): <list of identifiers, or "none">
+- Remaining sub-issues to dispatch: <list of identifiers>
+```
+
 ### P3. Transition Labels
 
 Replace `planning` with `implementing` on the parent issue.
@@ -530,7 +534,7 @@ Ensure the `implementing` label exists. Then call `mcp__linear-server__save_issu
 
 Process sub-issues **sequentially** (each phase depends on the previous one). Before dispatching each open child, the orchestrator (this session) must inspect that sub-issue's labels and choose the implementation runner from those labels. The dispatched worker runs the full leaf lifecycle for that one sub-issue and returns a short result summary.
 
-**Honor the `SKIP_SUB_ISSUES` set built in P1a**: if a sub-issue's identifier appears in `SKIP_SUB_ISSUES`, skip it entirely — do not run pre-dispatch cleanup, do not dispatch a worker, and do not delete its branch or PR. Move on to the next sub-issue.
+**Honor the `SKIP_SUB_ISSUES` set built in P2a**: if a sub-issue's identifier appears in `SKIP_SUB_ISSUES`, skip it entirely — do not run pre-dispatch cleanup, do not dispatch a worker, and do not delete its branch or PR. Move on to the next sub-issue.
 
 #### Pre-Dispatch: Detect and Discard Partial Work
 
