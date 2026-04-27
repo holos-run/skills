@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.6.0
+version: 2.6.1
 ---
 
 # Implement Issue
@@ -19,6 +19,14 @@ Implement the Linear issue **{{SKILL_INPUT}}**.
 - **PR** = GitHub pull request. Opened via `gh`.
 - The PR body must contain `Fixes <IDENTIFIER>` so Linear auto-closes the issue on merge.
 - Always send real newlines in Linear `body` / `description` values — never `\n` escape sequences.
+
+## Codex Model Mapping
+
+When this skill invokes `codex exec`, always pass `--model gpt-5.5` explicitly.
+
+- Codex CLI 5.3: `gpt-4.1`
+- Codex CLI 5.4: `o4-mini` (alias: `gpt-4.1-mini`)
+- Codex CLI 5.5: `gpt-5.5` (current default for this skill)
 
 ---
 
@@ -251,7 +259,7 @@ Then call `mcp__linear-server__save_issue` with `issue: "<ISSUE_IDENTIFIER>"` an
 If `codex` is available, the command L8b will run is:
 
 ```bash
-codex exec --dangerously-bypass-approvals-and-sandbox \
+codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
   "You are an adversarial code reviewer. Review the diff of PR #$PR_NUMBER in $REPO.
 
 Run: gh pr diff $PR_NUMBER
@@ -282,7 +290,7 @@ Example from a project's CLAUDE.md:
 ## Code Review
 
 ```bash
-codex exec --dangerously-bypass-approvals-and-sandbox \
+codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
   "Review PR #$PR_NUMBER on branch $BRANCH in $REPO. \
    Report findings as [CRITICAL], [IMPORTANT], or [STYLE]. \
    Respond with APPROVE or REQUEST_CHANGES."
@@ -660,7 +668,7 @@ Agent(
 If routing selects Codex, run the Codex CLI directly:
 
 ```bash
-codex exec --dangerously-bypass-approvals-and-sandbox \
+codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
   "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER> to implement this sub-issue end-to-end.
 The skill handles branching, implementation, code review, CI, merge, and issue transitions.
 Run to completion. Return a short summary: result (MERGED | MERGED_WITH_DEFERRED_ACS |
@@ -722,7 +730,7 @@ Use a retry loop with up to **3 total attempts** per sub-issue:
 
    If the route is Codex:
    ```bash
-   codex exec --dangerously-bypass-approvals-and-sandbox \
+   codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
      "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER>.
 
 Warning: A previous attempt did not complete. Point: <e.g. 'wrote files but did not commit'>.
