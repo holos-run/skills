@@ -124,7 +124,7 @@ Branch naming: `feat/<identifier-lowercased>-<slug>` where slug is the issue tit
 
 **Never check out `main` locally.** This skill always runs in a Git worktree, and a branch can only be checked out in one worktree at a time — `main` belongs to the repo's primary worktree, not this one. Branch directly from `origin/main` instead. The `git checkout -b <name> origin/main` form creates the branch from `origin/main`'s tip and sets the new branch's upstream tracking to `origin/main`.
 
-When you later push the new branch, use `git push origin HEAD` (no `-u`) so the upstream tracking stays on `origin/main`. The PR is opened against `main` regardless.
+Always push with `git push origin HEAD` (no `-u`) so the upstream tracking stays on `origin/main`. The PR is opened against `main` regardless.
 
 ### L3. Announce on the Issue
 
@@ -602,6 +602,12 @@ Ensure the `implementing` label exists. Then call `mcp__linear-server__save_issu
 
 Process sub-issues **sequentially** (each phase depends on the previous one). Before dispatching each open child, the orchestrator (this session) must inspect that sub-issue's labels and choose the implementation runner from those labels. The dispatched worker runs the full leaf lifecycle for that one sub-issue and returns a short result summary.
 
+Capture the orchestrator's primary issue branch once at the start of P4 — pre-dispatch cleanup may need to switch back to it if a previous run crashed while a sub-issue branch was checked out:
+
+```bash
+PRIMARY_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+```
+
 **Honor the `SKIP_SUB_ISSUES` set built in P2a**: if a sub-issue's identifier appears in `SKIP_SUB_ISSUES`, skip it entirely — do not run pre-dispatch cleanup, do not dispatch a worker, and do not delete its branch or PR. Move on to the next sub-issue.
 
 #### Pre-Dispatch: Patch Missing Base-Branch Override
@@ -614,11 +620,11 @@ For each open child not in `SKIP_SUB_ISSUES`:
    ```bash
    REPO_NAME=$(gh repo view --json name -q .name)
    ```
-2. Fetch the child's full description via `mcp__linear-server__get_issue` with `id: "<SUB_IDENTIFIER>"`.
-3. Inspect the **first non-empty line** of the description. The override tag must match the regex `^\[repo=[^#\]]+#main\]\s*$` (no other content on that line).
-4. **If the tag is present and references `#main`:** continue to the next pre-dispatch step.
-5. **If the tag is missing, or it points to a base branch other than `main` (e.g., `[repo=foo#hol-1028-…]`):** patch the description:
-   - Build the new description by prepending `[repo=<REPO_NAME>#main]\n\n` to the existing description, after stripping any pre-existing `[repo=…]` tag from the start.
+2. Fetch the child's full description via `mcp__linear-server__get_issue` with `id: "<SUB_IDENTIFIER>"`. If the description is `null`, missing, or empty, treat it as the empty string for the rest of this step.
+3. Inspect the **first line** of the description (after treating null/empty as `""`; do not skip leading blank lines — `plan-issue` always emits the tag on line 1). The override tag must match the regex `^\[repo=([^#\]]+)#main\]\s*$` and the captured repo-name group must equal `<REPO_NAME>`.
+4. **If the tag is present, references `#main`, AND the repo-name matches `<REPO_NAME>`:** continue to the next pre-dispatch step.
+5. **If the tag is missing, points to a base branch other than `main` (e.g., `[repo=foo#hol-1028-…]`), or references a different repo-name (e.g., `[repo=wrong-repo#main]` when this repo is `<REPO_NAME>`):** patch the description:
+   - Build the new description by stripping any pre-existing `[repo=…]` tag from the very start (the tag line plus any immediately-following blank lines), then prepending `[repo=<REPO_NAME>#main]\n\n` to whatever remains. If the remainder is empty, the patched description is just `[repo=<REPO_NAME>#main]\n`.
    - Call `mcp__linear-server__save_issue` with `issue: "<SUB_IDENTIFIER>"` and the new `description`.
    - Post a comment on the sub-issue via `mcp__linear-server__save_comment`:
      ```
@@ -652,17 +658,23 @@ If partial work exists (`SUB_BRANCH` or `SUB_OPEN_PR` is non-empty):
    ```bash
    git push origin --delete "$SUB_BRANCH" 2>/dev/null || true
    ```
-3. Delete the local branch (after first switching off it if it is the current branch — see step 4):
+3. If `$SUB_BRANCH` is the current branch (a previous orchestrator session crashed while it was checked out), switch back to the orchestrator's primary issue branch first — `git branch -D` will refuse to delete a checked-out branch. The orchestrator already knows its primary branch from P0; capture it once at the start of P4 as `PRIMARY_BRANCH` and reuse here:
+   ```bash
+   if [ "$(git rev-parse --abbrev-ref HEAD)" = "$SUB_BRANCH" ]; then
+     git checkout "$PRIMARY_BRANCH"
+   fi
+   ```
+4. Delete the local branch:
    ```bash
    git branch -D "$SUB_BRANCH" 2>/dev/null || true
    ```
-4. Refresh `origin/main` without checking out `main` locally. The orchestrator stays on its own primary issue branch (e.g., `cyrus/hol-XXXX-…` or `jeff/hol-XXXX-…`) — that branch is already rebased on `origin/main` per P0, so a plain fetch is sufficient. **Do not run `git checkout main`**: `main` is checked out in another worktree and the checkout will fail.
+5. Refresh `origin/main` without checking out `main` locally. The orchestrator stays on its own primary issue branch (e.g., `cyrus/hol-XXXX-…` or `jeff/hol-XXXX-…`) — that branch is already rebased on `origin/main` per P0, so a plain fetch is sufficient. **Do not run `git checkout main`**: `main` is checked out in another worktree and the checkout will fail.
    ```bash
    git fetch origin
    ```
-5. Reset the sub-issue to its unstarted state and remove the `implementing` label:
+6. Reset the sub-issue to its unstarted state and remove the `implementing` label:
    Call `mcp__linear-server__save_issue` with `issue: "<SUB_IDENTIFIER>"`, `state: "<unstarted-type state>"`, removing `implementing` from labels.
-6. Post a comment on the sub-issue via `mcp__linear-server__save_comment`:
+7. Post a comment on the sub-issue via `mcp__linear-server__save_comment`:
    ```
    Discarding partial work from a previous attempt. Starting a clean implementation.
    ```
@@ -802,11 +814,11 @@ After all original children are processed, re-list children via `mcp__linear-ser
 
 Compare against the original list. Any new open child is a follow-up created during review.
 
-Process follow-ups the same way — dispatch one worker per follow-up using the label-routing rules from P4.
+Process follow-ups with the **full P4 pre-dispatch sequence** — including the *Pre-Dispatch: Patch Missing Base-Branch Override* step and the *Pre-Dispatch: Detect and Discard Partial Work* step — then dispatch one worker per follow-up using the same label-routing rules. Follow-ups created during code review almost always lack the override tag (the follow-up template in step L11 does not emit it), so the patch step is what guarantees they branch from `main`.
 
 ### P6. Nested Parent Issues
 
-If a sub-issue or follow-up is itself a parent (has its own children), the dispatched worker invoked in P4 will simply re-enter this skill in Parent Mode and orchestrate its own children with the same label-routing rules. Nested orchestration composes naturally — no special handling is needed for depth beyond re-checking labels at each parent.
+If a sub-issue or follow-up is itself a parent (has its own children), the dispatched worker invoked in P4 will simply re-enter this skill in Parent Mode and orchestrate its own children with the same label-routing rules — including the full P4 pre-dispatch sequence (override patch + partial-work cleanup) for each grand-child. Nested orchestration composes naturally — no special handling is needed for depth beyond re-checking labels at each parent.
 
 By default, nested parent orchestrators should also run on **Sonnet**. Use **Opus** only when the nested parent issue is explicitly labeled `opus`; use **Codex CLI** when it is explicitly labeled `codex`.
 

@@ -91,7 +91,7 @@ git checkout -b feat/<id>-<slug> origin/main
 
 That single `checkout -b … origin/main` form creates the new branch from the
 fetched `origin/main` tip and sets the new branch's upstream tracking to
-`origin/main`. Subsequent pushes use `git push origin HEAD` (no `-u`) so the
+`origin/main`. Always push with `git push origin HEAD` (no `-u`) so the
 upstream stays on `origin/main`; the PR is opened against `main` regardless.
 
 Between sub-issue dispatches, the orchestrator stays on its own primary issue
