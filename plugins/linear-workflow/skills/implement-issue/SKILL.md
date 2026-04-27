@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.5.1
+version: 2.6.0
 ---
 
 # Implement Issue
@@ -434,10 +434,67 @@ Call `mcp__linear-server__save_comment` with `issue: "<ISSUE_IDENTIFIER>"` and b
 
 Orchestrator for a parent issue with children. Uses label-aware dispatch to route each child issue to either a Claude Code sub-agent or the Codex CLI.
 
+### P0. Establish Primary Issue Branch and Rebase
+
+Before doing any orchestration work, ensure the session is on the **primary issue's branch** — never the parent issue's branch — and that the branch is rebased on the latest `origin/main`. Run this step at the top of **every** orchestrator invocation, including re-invocations and resumptions.
+
+1. Determine the expected branch for the primary issue:
+   - Prefer `gitBranchName` from the `mcp__linear-server__get_issue` response (e.g., `jeff/hol-1061-…`).
+   - If absent, look for an existing local or remote branch whose name contains `<ISSUE_IDENTIFIER lowercased>` (e.g., a `cyrus/hol-1061-…` worktree branch). Any such branch is acceptable as long as it is unique to this primary issue.
+
+2. Verify the **current** branch belongs to the primary issue. The current branch must contain `<ISSUE_IDENTIFIER lowercased>` in its name. If not — for example, the current branch contains a different identifier such as the parent issue's identifier — abort:
+
+   - Post a comment on the issue:
+     ```
+     Refusing to orchestrate from branch `<current-branch>` — it does not match the primary issue <ISSUE_IDENTIFIER>. Expected the branch name to contain `<identifier-lowercased>`. Switch worktrees and try again.
+     ```
+   - Add `needs-human-review` to the issue and stop the skill.
+
+3. Fetch and rebase on the latest `origin/main`:
+
+   ```bash
+   git fetch origin
+   git rebase origin/main
+   ```
+
+   If the rebase fails due to conflicts:
+   - Run `git rebase --abort`.
+   - Post a comment on the issue listing the conflicting paths from the rebase output.
+   - Add `needs-human-review` to the issue and stop the skill.
+
+4. If the branch had local commits that have already landed via merged PRs, `git rebase origin/main` drops them automatically. That is the desired behavior — those phases are already complete on `main` and must not be re-implemented.
+
 ### P1. Start Wall Clock Timer
 
 ```bash
 PLAN_START_TIME=$(date +%s)
+```
+
+### P1a. Review Existing Progress
+
+After the rebase, inspect the diff between `origin/main` and `HEAD` to detect work already implemented in this branch from a prior orchestrator session. The orchestrator **must not** re-implement what already landed on `main` or what already exists as commits on the primary issue branch.
+
+```bash
+git log --oneline origin/main..HEAD
+git diff --stat origin/main..HEAD
+```
+
+For each sub-issue (from the children list in P2), classify it as **already-implemented** when either of the following holds:
+
+- Its Linear status is `completed` or `canceled` — the rebase has already incorporated any merged work from `origin/main`, so nothing remains to do.
+- Commits on the primary issue branch (`origin/main..HEAD`) reference the sub-issue's identifier in their message or touch files matching the sub-issue's scope — a prior session committed work for it without merging.
+
+When dispatching in P4, **skip** every already-implemented sub-issue — do not dispatch a worker for it.
+
+Post a brief comment on the parent issue summarizing the resume state:
+
+```
+## Resuming orchestration on rebased branch
+
+- Branch: <current-branch>
+- Commits ahead of origin/main: <N>
+- Already-implemented sub-issues (skipped): <list of identifiers, or "none">
+- Remaining sub-issues: <list of identifiers>
 ```
 
 ### P2. List Children
