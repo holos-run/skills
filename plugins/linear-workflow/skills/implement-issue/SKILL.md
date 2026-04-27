@@ -429,7 +429,7 @@ gh pr merge $PR_NUMBER --merge --delete-branch
 
 If style-only findings remain after round 2, create a follow-up Linear issue:
 
-Call `mcp__linear-server__save_issue`:
+Determine `<REPO_NAME>` (e.g., `gh repo view --json name -q .name`), then call `mcp__linear-server__save_issue`:
 
 - `team: "<TEAM_KEY>"`
 - `parentId: "<PARENT_ID>"` if this issue has a parent (attach to same plan); otherwise omit
@@ -437,6 +437,8 @@ Call `mcp__linear-server__save_issue`:
 - `description`:
 
 ```markdown
+[repo=<REPO_NAME>#main]
+
 ## Context
 
 PR #<PR_NUMBER> (issue <ISSUE_IDENTIFIER>) was merged with style-only review findings remaining.
@@ -445,6 +447,8 @@ PR #<PR_NUMBER> (issue <ISSUE_IDENTIFIER>) was merged with style-only review fin
 
 <paste remaining style findings>
 ```
+
+The `[repo=<REPO_NAME>#main]` override on the first line ensures Cyrus branches the follow-up's worktree from `main` rather than the parent issue's branch. With this template emitting the tag directly, the P5 sweep's pre-dispatch patch step is a no-op for normally-created follow-ups — it remains in place to cover manually-created or legacy follow-ups.
 
 Record the follow-up identifier as `FOLLOW_UP_IDENTIFIER`.
 
@@ -616,22 +620,25 @@ Before dispatching each child, ensure its description begins with a Cyrus base-b
 
 For each open child not in `SKIP_SUB_ISSUES`:
 
-1. Determine `<REPO_NAME>` once (cache the result):
+1. Determine `<REPO_NAME>` once (cache the result). Suppose `<REPO_NAME>` resolves to `skills` for the holos-run/skills repo:
    ```bash
    REPO_NAME=$(gh repo view --json name -q .name)
    ```
 2. Fetch the child's full description via `mcp__linear-server__get_issue` with `id: "<SUB_IDENTIFIER>"`. If the description is `null`, missing, or empty, treat it as the empty string for the rest of this step.
-3. Inspect the **first line** of the description (after treating null/empty as `""`; do not skip leading blank lines — `plan-issue` always emits the tag on line 1). The override tag must match the regex `^\[repo=([^#\]]+)#main\]\s*$` and the captured repo-name group must equal `<REPO_NAME>`.
-4. **If the tag is present, references `#main`, AND the repo-name matches `<REPO_NAME>`:** continue to the next pre-dispatch step.
-5. **If the tag is missing, points to a base branch other than `main` (e.g., `[repo=foo#hol-1028-…]`), or references a different repo-name (e.g., `[repo=wrong-repo#main]` when this repo is `<REPO_NAME>`):** patch the description:
-   - Build the new description by stripping any pre-existing `[repo=…]` tag from the very start (the tag line plus any immediately-following blank lines), then prepending `[repo=<REPO_NAME>#main]\n\n` to whatever remains. If the remainder is empty, the patched description is just `[repo=<REPO_NAME>#main]\n`.
+3. Find the **first non-empty line** of the description (skip any leading blank or whitespace-only lines). If the description has no non-empty lines, treat the first non-empty line as `""`. Test that line against the regex `^\[repo=([^#\]]+)#main\]\s*$` and require the captured repo-name group to equal `<REPO_NAME>`.
+4. **If the first non-empty line matches the regex AND the captured repo-name equals `<REPO_NAME>`:** continue to the next pre-dispatch step.
+5. **If the tag is missing, points to a base branch other than `main` (e.g., `[repo=skills#hol-1028-…]`), or references a different repo-name (e.g., `[repo=wrong-repo#main]` when this repo is `skills`):** patch the description:
+   - Build the new description with this algorithm:
+     1. Drop all leading blank or whitespace-only lines from the description.
+     2. If the new first line (after step 1) matches the prefix regex `^\[repo=[^\]]+\]\s*$`, drop that line **and** any blank or whitespace-only lines that immediately follow it. (This anchor at "first line after stripping leading blanks" prevents accidentally stripping a `[repo=…]` token that happens to appear deeper in the body.)
+     3. Prepend `[repo=<REPO_NAME>#main]\n\n` to whatever remains. If the remainder is empty, the patched description is `[repo=<REPO_NAME>#main]\n`.
    - Call `mcp__linear-server__save_issue` with `issue: "<SUB_IDENTIFIER>"` and the new `description`.
    - Post a comment on the sub-issue via `mcp__linear-server__save_comment`:
      ```
      Patched description to add `[repo=<REPO_NAME>#main]` base-branch override so this phase's worktree branches from `main` rather than the parent issue's branch.
      ```
 
-This patch is idempotent — re-running the orchestrator on a child that already has the correct tag is a no-op.
+This patch is idempotent — re-running the orchestrator on a child that already has the correct tag (with matching repo-name) is a no-op, and re-running on a child whose description started with one or more blank lines before the tag normalizes the description without producing a double tag.
 
 #### Pre-Dispatch: Detect and Discard Partial Work
 
@@ -814,7 +821,7 @@ After all original children are processed, re-list children via `mcp__linear-ser
 
 Compare against the original list. Any new open child is a follow-up created during review.
 
-Process follow-ups with the **full P4 pre-dispatch sequence** — including the *Pre-Dispatch: Patch Missing Base-Branch Override* step and the *Pre-Dispatch: Detect and Discard Partial Work* step — then dispatch one worker per follow-up using the same label-routing rules. Follow-ups created during code review almost always lack the override tag (the follow-up template in step L11 does not emit it), so the patch step is what guarantees they branch from `main`.
+Process follow-ups with the **full P4 pre-dispatch sequence** — including the *Pre-Dispatch: Patch Missing Base-Branch Override* step and the *Pre-Dispatch: Detect and Discard Partial Work* step — then dispatch one worker per follow-up using the same label-routing rules. Normally-created follow-ups already emit the override tag via the L11 template, so the patch step is a no-op for them; it remains load-bearing for manually-created or legacy follow-ups that lack the tag.
 
 ### P6. Nested Parent Issues
 
