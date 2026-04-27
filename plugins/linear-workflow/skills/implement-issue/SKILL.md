@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.5.0
+version: 2.5.1
 ---
 
 # Implement Issue
@@ -218,7 +218,7 @@ Example from a project's CLAUDE.md:
 ## Code Review
 
 ```bash
-codex --approval-mode full-auto --full-auto \
+codex exec --dangerously-bypass-approvals-and-sandbox \
   "Review PR #$PR_NUMBER on branch $BRANCH in $REPO. \
    Report findings as [CRITICAL], [IMPORTANT], or [STYLE]. \
    Respond with APPROVE or REQUEST_CHANGES."
@@ -535,7 +535,7 @@ Agent(
 If routing selects Codex, run the Codex CLI directly:
 
 ```bash
-codex --dangerously-bypass-approvals-and-sandbox --full-auto \
+codex exec --dangerously-bypass-approvals-and-sandbox \
   "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER> to implement this sub-issue end-to-end.
 The skill handles branching, implementation, code review, CI, merge, and issue transitions.
 Run to completion. Return a short summary: result (MERGED | MERGED_WITH_DEFERRED_ACS |
@@ -597,7 +597,7 @@ Use a retry loop with up to **3 total attempts** per sub-issue:
 
    If the route is Codex:
    ```bash
-   codex --dangerously-bypass-approvals-and-sandbox --full-auto \
+   codex exec --dangerously-bypass-approvals-and-sandbox \
      "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER>.
 
 Warning: A previous attempt did not complete. Point: <e.g. 'wrote files but did not commit'>.
