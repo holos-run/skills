@@ -434,19 +434,22 @@ Call `mcp__linear-server__save_comment` with `issue: "<ISSUE_IDENTIFIER>"` and b
 
 Orchestrator for a parent issue with children. Uses label-aware dispatch to route each child issue to either a Claude Code sub-agent or the Codex CLI.
 
-### P0. Establish Primary Issue Branch and Rebase
+### P0. Verify Primary Issue Branch and Rebase
 
 Before doing any orchestration work, ensure the session is on the **primary issue's branch** — never the parent issue's branch — and that the branch is rebased on the latest `origin/main`. Run this step at the top of **every** orchestrator invocation, including re-invocations and resumptions.
 
+Define `IDENT_LC` as `ISSUE_IDENTIFIER` lowercased (e.g., `HOL-1061` → `hol-1061`). All branch-name comparisons in this step are **case-insensitive** — match the lowercased branch name against `IDENT_LC`.
+
 1. Determine the expected branch for the primary issue:
    - Prefer `gitBranchName` from the `mcp__linear-server__get_issue` response (e.g., `jeff/hol-1061-…`).
-   - If absent, look for an existing local or remote branch whose name contains `<ISSUE_IDENTIFIER lowercased>` (e.g., a `cyrus/hol-1061-…` worktree branch). Any such branch is acceptable as long as it is unique to this primary issue.
+   - If absent, look for an existing local or remote branch whose lowercased name contains `IDENT_LC` (e.g., a `cyrus/hol-1061-…` worktree branch). Any such branch is acceptable as long as it is unique to this primary issue.
 
-2. Verify the **current** branch belongs to the primary issue. The current branch must contain `<ISSUE_IDENTIFIER lowercased>` in its name. If not — for example, the current branch contains a different identifier such as the parent issue's identifier — abort:
+2. Verify the **current** branch belongs to the primary issue. The lowercased current branch name must contain `IDENT_LC`. If it does not — for example, the branch contains the parent issue's identifier instead — abort:
 
+   - Ensure the `needs-human-review` label exists for the team (call `mcp__linear-server__list_issue_labels`; create it via `mcp__linear-server__create_issue_label` if missing).
    - Post a comment on the issue:
      ```
-     Refusing to orchestrate from branch `<current-branch>` — it does not match the primary issue <ISSUE_IDENTIFIER>. Expected the branch name to contain `<identifier-lowercased>`. Switch worktrees and try again.
+     Refusing to orchestrate from branch `<current-branch>` — it does not match the primary issue <ISSUE_IDENTIFIER>. Expected the lowercased branch name to contain `<IDENT_LC>`. Switch worktrees and try again.
      ```
    - Add `needs-human-review` to the issue and stop the skill.
 
@@ -457,12 +460,13 @@ Before doing any orchestration work, ensure the session is on the **primary issu
    git rebase origin/main
    ```
 
+   If the rebase succeeds with dropped commits (commits that already landed on `origin/main` via merged PRs), that is the desired behavior — those phases are already complete and must not be re-implemented.
+
    If the rebase fails due to conflicts:
    - Run `git rebase --abort`.
+   - Ensure the `needs-human-review` label exists for the team (create via `mcp__linear-server__create_issue_label` if missing).
    - Post a comment on the issue listing the conflicting paths from the rebase output.
    - Add `needs-human-review` to the issue and stop the skill.
-
-4. If the branch had local commits that have already landed via merged PRs, `git rebase origin/main` drops them automatically. That is the desired behavior — those phases are already complete on `main` and must not be re-implemented.
 
 ### P1. Start Wall Clock Timer
 
@@ -482,9 +486,9 @@ git diff --stat origin/main..HEAD
 For each sub-issue (from the children list in P2), classify it as **already-implemented** when either of the following holds:
 
 - Its Linear status is `completed` or `canceled` — the rebase has already incorporated any merged work from `origin/main`, so nothing remains to do.
-- Commits on the primary issue branch (`origin/main..HEAD`) reference the sub-issue's identifier in their message or touch files matching the sub-issue's scope — a prior session committed work for it without merging.
+- A commit message on the primary issue branch (`origin/main..HEAD`) references the sub-issue's identifier — for example, `feat(...): … Refs: APP-301` or any commit subject/body that includes the identifier in the form `<TEAM>-<NUMBER>`. This indicates a prior orchestrator session committed work for that sub-issue without merging.
 
-When dispatching in P4, **skip** every already-implemented sub-issue — do not dispatch a worker for it.
+Build a `SKIP_SUB_ISSUES` set containing every already-implemented sub-issue identifier. The dispatch step (P4) **must consult `SKIP_SUB_ISSUES` and skip any sub-issue in it** — do not dispatch a worker for those identifiers and do not delete their existing branch state.
 
 Post a brief comment on the parent issue summarizing the resume state:
 
@@ -525,6 +529,8 @@ Ensure the `implementing` label exists. Then call `mcp__linear-server__save_issu
 ### P4. Dispatch Sub-Issues
 
 Process sub-issues **sequentially** (each phase depends on the previous one). Before dispatching each open child, the orchestrator (this session) must inspect that sub-issue's labels and choose the implementation runner from those labels. The dispatched worker runs the full leaf lifecycle for that one sub-issue and returns a short result summary.
+
+**Honor the `SKIP_SUB_ISSUES` set built in P1a**: if a sub-issue's identifier appears in `SKIP_SUB_ISSUES`, skip it entirely — do not run pre-dispatch cleanup, do not dispatch a worker, and do not delete its branch or PR. Move on to the next sub-issue.
 
 #### Pre-Dispatch: Detect and Discard Partial Work
 
