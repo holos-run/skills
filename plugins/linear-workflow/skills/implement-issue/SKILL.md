@@ -8,7 +8,7 @@ version: 2.6.0
 
 Implement a Linear issue end-to-end. This skill self-detects whether the issue is a leaf issue (no children) or a parent issue (has children) and adapts its behavior:
 
-- **Leaf mode**: Branch, implement, open PR, run adversarial code review (up to 2 fix rounds), wait for CI, merge, and mark Done.
+- **Leaf mode**: Branch, implement, open PR, run adversarial code review (label-aware reviewer selection — Sonnet by default, Opus or Codex when explicitly labeled), up to 2 fix rounds, wait for CI, merge, and mark Done.
 - **Parent mode**: Orchestrate implementation of all child issues with label-aware dispatch: Sonnet by default, Opus when explicitly labeled, Codex CLI when explicitly labeled, then track results, sweep for follow-ups, and post a summary.
 
 Implement the Linear issue **{{SKILL_INPUT}}**.
@@ -206,7 +206,71 @@ Run adversarial code review on the PR. Up to 2 fix rounds, then a final gate che
 
 #### L8a. Resolve the Review Command
 
-Look in the project's `CLAUDE.md` or `AGENTS.md` for a section headed `## Code Review` that contains a fenced code block with a shell command. The command is a template with these variables:
+Resolve which reviewer L8b will invoke. **L8a does not run the review** — it only selects the path and verifies prerequisites. L8b actually executes it.
+
+Detect variables (used by all paths below). All shell snippets in this section are meant to be expanded by the runner's shell — `$PR_NUMBER`, `$BRANCH`, `$REPO` are real shell variables, not placeholders:
+
+```bash
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+PR_NUMBER=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].number')
+```
+
+**Reviewer selection (in priority order).** Lowercase the issue's `EXISTING_LABELS` (recorded in step 1) before matching:
+
+1. **Issue labeled `codex`** → Codex CLI reviewer.
+2. **Issue labeled `opus`** → Claude sub-agent with `model: "opus"`.
+3. **Issue labeled `sonnet`** → Claude sub-agent with `model: "sonnet"`.
+4. **No routing label, and project's `CLAUDE.md` or `AGENTS.md` contains a `## Code Review` section** with a fenced shell command → use that command.
+5. **No routing label and no project config** → Claude sub-agent on `sonnet`.
+
+If conflicting routing labels are present, prefer in this order: `codex` > `opus` > `sonnet`. **Routing labels always win over the project's `## Code Review` config.** When a routing label is present, the project config is not consulted — even if both happen to invoke the same backend (e.g., issue labeled `codex` and project config also runs `codex exec`), the routing-label path uses the prompt below, not the project's command.
+
+**Codex reviewer (when issue is labeled `codex`):**
+
+Verify the Codex CLI is on `PATH`:
+
+```bash
+command -v codex >/dev/null
+```
+
+If `codex` is **not** found, do NOT fall back to a Claude sub-agent. Surface an explicit error and escalate now (do not proceed to L8b–L8d):
+
+```bash
+gh pr comment $PR_NUMBER --body "$(cat <<'EOF'
+## Code Review Cannot Proceed
+
+This issue is labeled `codex`, but the `codex` CLI is not available on PATH in this environment. The reviewer cannot silently downgrade to another model. Marking for human review.
+EOF
+)"
+gh pr edit $PR_NUMBER --add-label "needs-human-review"
+```
+
+Then call `mcp__linear-server__save_issue` with `issue: "<ISSUE_IDENTIFIER>"` and `labels: ["needs-human-review", ...existing]`. Skip directly to step L13 with result `ESCALATED`.
+
+If `codex` is available, the command L8b will run is:
+
+```bash
+codex exec --dangerously-bypass-approvals-and-sandbox \
+  "You are an adversarial code reviewer. Review the diff of PR #$PR_NUMBER in $REPO.
+
+Run: gh pr diff $PR_NUMBER
+
+Examine every changed file. Report findings using these severity levels:
+- [CRITICAL] — security vulnerabilities, data loss, crashes, correctness bugs
+- [IMPORTANT] — error handling gaps, race conditions, missing validation, test gaps
+- [STYLE] — naming, formatting, dead code, minor improvements
+
+At the end, state your verdict:
+- APPROVE — if no critical or important findings
+- REQUEST_CHANGES — if any critical or important findings exist
+
+List each finding with file path, line number, severity, and description."
+```
+
+**Project-configured reviewer (no routing label, but project config provides a command):**
+
+The project's `CLAUDE.md` or `AGENTS.md` may contain a section headed `## Code Review` with a fenced code block. The command is a template with these variables:
 
 - `$PR_NUMBER` — the PR number
 - `$BRANCH` — the current branch name
@@ -225,22 +289,16 @@ codex exec --dangerously-bypass-approvals-and-sandbox \
 ```
 </pre>
 
-If found, use that command. Detect the variables:
+If found, that command is what L8b will run, with variables resolved from the shell.
 
-```bash
-REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-PR_NUMBER=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].number')
-```
+**Claude sub-agent reviewer (default fallback or explicit `sonnet`/`opus` label):**
 
-**Fallback** — if no `## Code Review` section is found in project config:
-
-Spawn a Claude sub-agent for review (Sonnet — well-suited for adversarial review of a single PR diff):
+L8b will spawn a Claude sub-agent for review:
 
 ```
 Agent(
   description: "Code review PR #$PR_NUMBER",
-  model: "sonnet",
+  model: "<sonnet | opus>",
   prompt: "You are an adversarial code reviewer. Review the diff of PR #$PR_NUMBER in $REPO.
 
 Run: gh pr diff $PR_NUMBER
@@ -301,15 +359,15 @@ Run the review command one final time. Parse the output.
 
    ```bash
    gh pr comment $PR_NUMBER --body "$(cat <<'EOF'
-   ## Unresolved Critical/Important Findings
+## Unresolved Critical/Important Findings
 
-   After 2 review rounds, the following findings remain unresolved:
+After 2 review rounds, the following findings remain unresolved:
 
-   <list each finding with file, line, and description>
+<list each finding with file, line, and description>
 
-   This PR requires human review before merge.
-   EOF
-   )"
+This PR requires human review before merge.
+EOF
+)"
    ```
 
 2. Add `needs-human-review` label on the PR:
@@ -796,7 +854,7 @@ Leave the parent in its current state. Add `needs-human-review` alongside `imple
 - **GitHub CLI**: `gh` authenticated with repo access
 - **Git**: Clean working directory
 - **Code review tool**: Configured in project's CLAUDE.md (optional — falls back to Claude sub-agent)
-- **Codex CLI**: Required only for sub-issues labeled `codex`
+- **Codex CLI**: Required for issues labeled `codex` (used for both implementation dispatch in Parent Mode and reviewer selection in Leaf Mode)
 
 ## Linear API Cheat Sheet
 
