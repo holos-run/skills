@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.5.1
+version: 2.6.0
 ---
 
 # Implement Issue
@@ -434,6 +434,44 @@ Call `mcp__linear-server__save_comment` with `issue: "<ISSUE_IDENTIFIER>"` and b
 
 Orchestrator for a parent issue with children. Uses label-aware dispatch to route each child issue to either a Claude Code sub-agent or the Codex CLI.
 
+### P0. Verify Primary Issue Branch and Rebase
+
+Before doing any orchestration work, ensure the session is on the **primary issue's branch** — never the parent issue's branch — and that the branch is rebased on the latest `origin/main`. Run this step at the top of **every** orchestrator invocation, including re-invocations and resumptions.
+
+Define `IDENT_LC` as `ISSUE_IDENTIFIER` lowercased (e.g., `HOL-1061` → `hol-1061`). All branch-name comparisons in this step are **case-insensitive** — match the lowercased branch name against `IDENT_LC`.
+
+1. Determine the expected branch for the primary issue:
+   - Prefer `gitBranchName` from the `mcp__linear-server__get_issue` response (e.g., `jeff/hol-1061-…`).
+   - If absent, look for an existing local or remote branch whose lowercased name contains `IDENT_LC` (e.g., a `cyrus/hol-1061-…` worktree branch). Any such branch is acceptable as long as it is unique to this primary issue.
+
+2. Verify the **current** branch belongs to the primary issue. The lowercased current branch name must contain `IDENT_LC`. If it does not — for example, the branch contains the parent issue's identifier instead — abort:
+
+   - Ensure the `needs-human-review` label exists for the team (call `mcp__linear-server__list_issue_labels`; create it via `mcp__linear-server__create_issue_label` if missing).
+   - Post a comment on the issue:
+     ```
+     Refusing to orchestrate from branch `<current-branch>` — it does not match the primary issue <ISSUE_IDENTIFIER>. Expected the lowercased branch name to contain `<IDENT_LC>`. Switch worktrees and try again.
+     ```
+   - Add `needs-human-review` to the issue and stop the skill.
+
+3. Fetch and rebase on the latest `origin/main`:
+
+   ```bash
+   git fetch origin
+   git rebase origin/main
+   ```
+
+   If the rebase succeeds with dropped commits (commits that already landed on `origin/main` via merged PRs), that is the desired behavior — those phases are already complete and must not be re-implemented.
+
+   If the rebase fails due to conflicts:
+   - **Before** running `git rebase --abort`, capture the conflicting paths while the rebase is still in progress:
+     ```bash
+     CONFLICTS=$(git diff --name-only --diff-filter=U)
+     ```
+   - Then run `git rebase --abort`.
+   - Ensure the `needs-human-review` label exists for the team (create via `mcp__linear-server__create_issue_label` if missing).
+   - Post a comment on the issue listing the captured conflicting paths from `$CONFLICTS`.
+   - Add `needs-human-review` to the issue and stop the skill.
+
 ### P1. Start Wall Clock Timer
 
 ```bash
@@ -456,6 +494,33 @@ Skip any child whose status is `completed` or `canceled`.
 
 If no open children remain, post a comment that all work is complete and stop.
 
+### P2a. Review Existing Progress
+
+After listing children in P2, inspect the diff between `origin/main` and `HEAD` to detect work already implemented in this branch from a prior orchestrator session. The orchestrator **must not** re-implement what already landed on `main` or what already exists as commits on the primary issue branch.
+
+```bash
+git log --oneline origin/main..HEAD
+git diff --stat origin/main..HEAD
+```
+
+Classify each open sub-issue from P2 as **already-implemented** when either of the following holds:
+
+- Its Linear status is `completed` or `canceled` — the rebase has already incorporated any merged work from `origin/main`, so nothing remains to do. (P2 already filters these out, but list them in the resume comment for visibility.)
+- A commit message on the primary issue branch (`origin/main..HEAD`) references the sub-issue's identifier — for example, `feat(...): … Refs: APP-301` or any commit subject/body that includes the identifier in the form `<TEAM>-<NUMBER>`. This indicates a prior orchestrator session committed work for that sub-issue without merging.
+
+Build a `SKIP_SUB_ISSUES` set containing every already-implemented sub-issue identifier. The dispatch step (P4) **must consult `SKIP_SUB_ISSUES` and skip any sub-issue in it** — do not dispatch a worker for those identifiers and do not delete their existing branch state.
+
+Post a brief comment on the parent issue summarizing the orchestration state:
+
+```
+## Orchestration state
+
+- Branch: <current-branch>
+- Commits ahead of origin/main: <N>
+- Already-implemented sub-issues (skipped): <list of identifiers, or "none">
+- Remaining sub-issues to dispatch: <list of identifiers>
+```
+
 ### P3. Transition Labels
 
 Replace `planning` with `implementing` on the parent issue.
@@ -468,6 +533,8 @@ Ensure the `implementing` label exists. Then call `mcp__linear-server__save_issu
 ### P4. Dispatch Sub-Issues
 
 Process sub-issues **sequentially** (each phase depends on the previous one). Before dispatching each open child, the orchestrator (this session) must inspect that sub-issue's labels and choose the implementation runner from those labels. The dispatched worker runs the full leaf lifecycle for that one sub-issue and returns a short result summary.
+
+**Honor the `SKIP_SUB_ISSUES` set built in P2a**: if a sub-issue's identifier appears in `SKIP_SUB_ISSUES`, skip it entirely — do not run pre-dispatch cleanup, do not dispatch a worker, and do not delete its branch or PR. Move on to the next sub-issue.
 
 #### Pre-Dispatch: Detect and Discard Partial Work
 
