@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.6.1
+version: 2.7.0
 ---
 
 # Implement Issue
@@ -117,12 +117,14 @@ ISSUE_START_TIME=$(date +%s)
 
 ```bash
 git fetch origin
-git checkout main
-git pull origin main
-git checkout -b feat/<identifier-lowercased>-<slug>
+git checkout -b feat/<identifier-lowercased>-<slug> origin/main
 ```
 
 Branch naming: `feat/<identifier-lowercased>-<slug>` where slug is the issue title in lowercase, spaces replaced by hyphens, special characters stripped, truncated to ~40 chars.
+
+**Never check out `main` locally.** This skill always runs in a Git worktree, and a branch can only be checked out in one worktree at a time — `main` belongs to the repo's primary worktree, not this one. Branch directly from `origin/main` instead. The `git checkout -b <name> origin/main` form creates the branch from `origin/main`'s tip and sets the new branch's upstream tracking to `origin/main`.
+
+When you later push the new branch, use `git push origin HEAD` (no `-u`) so the upstream tracking stays on `origin/main`. The PR is opened against `main` regardless.
 
 ### L3. Announce on the Issue
 
@@ -602,6 +604,29 @@ Process sub-issues **sequentially** (each phase depends on the previous one). Be
 
 **Honor the `SKIP_SUB_ISSUES` set built in P2a**: if a sub-issue's identifier appears in `SKIP_SUB_ISSUES`, skip it entirely — do not run pre-dispatch cleanup, do not dispatch a worker, and do not delete its branch or PR. Move on to the next sub-issue.
 
+#### Pre-Dispatch: Patch Missing Base-Branch Override
+
+Before dispatching each child, ensure its description begins with a Cyrus base-branch override tag of the form `[repo=<REPO_NAME>#main]`. This tag tells Cyrus's `RepositoryRouter` to branch the sub-issue's worktree from `main` instead of the parent issue's branch (the default `parent-issue` rule in `determineBaseBranch`). New plans created via `plan-issue` v2.2.0+ already include this tag; older plans, manually-created sub-issues, and follow-ups created during code review may not.
+
+For each open child not in `SKIP_SUB_ISSUES`:
+
+1. Determine `<REPO_NAME>` once (cache the result):
+   ```bash
+   REPO_NAME=$(gh repo view --json name -q .name)
+   ```
+2. Fetch the child's full description via `mcp__linear-server__get_issue` with `id: "<SUB_IDENTIFIER>"`.
+3. Inspect the **first non-empty line** of the description. The override tag must match the regex `^\[repo=[^#\]]+#main\]\s*$` (no other content on that line).
+4. **If the tag is present and references `#main`:** continue to the next pre-dispatch step.
+5. **If the tag is missing, or it points to a base branch other than `main` (e.g., `[repo=foo#hol-1028-…]`):** patch the description:
+   - Build the new description by prepending `[repo=<REPO_NAME>#main]\n\n` to the existing description, after stripping any pre-existing `[repo=…]` tag from the start.
+   - Call `mcp__linear-server__save_issue` with `issue: "<SUB_IDENTIFIER>"` and the new `description`.
+   - Post a comment on the sub-issue via `mcp__linear-server__save_comment`:
+     ```
+     Patched description to add `[repo=<REPO_NAME>#main]` base-branch override so this phase's worktree branches from `main` rather than the parent issue's branch.
+     ```
+
+This patch is idempotent — re-running the orchestrator on a child that already has the correct tag is a no-op.
+
 #### Pre-Dispatch: Detect and Discard Partial Work
 
 Before choosing a runner for each sub-issue, check for leftover state from any prior attempt. Partial work is present when a local branch, remote branch, or open PR exists for the sub-issue.
@@ -627,13 +652,13 @@ If partial work exists (`SUB_BRANCH` or `SUB_OPEN_PR` is non-empty):
    ```bash
    git push origin --delete "$SUB_BRANCH" 2>/dev/null || true
    ```
-3. Delete the local branch:
+3. Delete the local branch (after first switching off it if it is the current branch — see step 4):
    ```bash
    git branch -D "$SUB_BRANCH" 2>/dev/null || true
    ```
-4. Return to a clean main:
+4. Refresh `origin/main` without checking out `main` locally. The orchestrator stays on its own primary issue branch (e.g., `cyrus/hol-XXXX-…` or `jeff/hol-XXXX-…`) — that branch is already rebased on `origin/main` per P0, so a plain fetch is sufficient. **Do not run `git checkout main`**: `main` is checked out in another worktree and the checkout will fail.
    ```bash
-   git checkout main && git pull origin main
+   git fetch origin
    ```
 5. Reset the sub-issue to its unstarted state and remove the `implementing` label:
    Call `mcp__linear-server__save_issue` with `issue: "<SUB_IDENTIFIER>"`, `state: "<unstarted-type state>"`, removing `implementing` from labels.
@@ -708,10 +733,9 @@ Use a retry loop with up to **3 total attempts** per sub-issue:
 
 1. If the worker's returned output does not contain a valid result summary, it got stuck.
 2. Note where it got stuck and why (e.g. "wrote files but did not commit", "opened PR but did not wait for CI").
-3. Clean up:
+3. Refresh `origin/main`. The orchestrator stays on its own primary issue branch — **never check out `main` locally**, which would conflict with the repo's primary worktree.
    ```bash
-   git checkout main
-   git pull origin main
+   git fetch origin
    ```
 4. Re-check the sub-issue's labels, then dispatch a replacement worker with the same sub-issue identifier plus a warning. Do not describe implementation steps — just provide context and let the skill decide what to do.
 
@@ -766,11 +790,10 @@ After each worker completes successfully, detect the result by checking the sub-
 
 Record per-sub-issue timing and results.
 
-After each sub-issue, the working directory should be clean on main:
+After each sub-issue, refresh `origin/main`. The orchestrator stays on its own primary issue branch between dispatches — **never check out `main` locally**. The next sub-issue's worker will branch directly from `origin/main` in its L2 step, so no local `main` is ever required.
 
 ```bash
-git checkout main
-git pull origin main
+git fetch origin
 ```
 
 ### P5. Sweep for Follow-Up Issues

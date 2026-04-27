@@ -47,6 +47,57 @@ can mix models within a single parent issue — assign `opus` to the hardest
 sub-issues and leave the rest unlabeled for Sonnet. When conflicting labels are
 present, precedence is: `codex` > `opus` > `sonnet`.
 
+## Per-Sub-Issue Base-Branch Routing
+
+By default, when Cyrus picks up a sub-issue under a parent issue, its
+`determineBaseBranch` rule resolves the base branch in this priority order:
+
+1. `[repo=<name>#<branch>]` override tag at the top of the issue description
+2. Graphite "blocked-by" relations
+3. **Parent issue's branch** (`parent-issue` rule)
+4. Repository default branch
+
+Without an override tag, rule 3 wins for any sub-issue with a parent — so
+Cyrus's activity message reads `→ cyrus/hol-1028-…` and the sub-issue's
+worktree is branched off the parent issue's branch instead of `main`. That
+breaks the per-phase PR model: each sub-issue's commits stack on the parent's
+branch and cannot merge to `main` independently.
+
+`plan-issue` (v2.2.0+) prevents this by emitting a `[repo=<repo-name>#main]`
+override on the very first line of every sub-issue description. The override
+is the priority-0 `commit-ish` input to `GitService` and forces the sub-issue
+worktree to branch from `main`.
+
+`implement-issue` (v2.7.0+) defends against the same misrouting from the
+other side. Before dispatching each child, the orchestrator inspects the
+child's description and patches in the override if it is missing or points
+somewhere other than `main`. Manually-created sub-issues, plans created by
+older `plan-issue` versions, and follow-ups generated during review are
+covered automatically.
+
+### Worktree-Friendly Branching
+
+The skill always runs in a Git worktree (Cyrus provisions a worktree per
+issue). A given branch can only be checked out in one worktree at a time, so
+**the workflow never checks out `main` locally** — `main` belongs to the
+repo's primary worktree, not the issue worktree.
+
+Instead, every leaf branch is created directly from `origin/main`:
+
+```bash
+git fetch origin
+git checkout -b feat/<id>-<slug> origin/main
+```
+
+That single `checkout -b … origin/main` form creates the new branch from the
+fetched `origin/main` tip and sets the new branch's upstream tracking to
+`origin/main`. Subsequent pushes use `git push origin HEAD` (no `-u`) so the
+upstream stays on `origin/main`; the PR is opened against `main` regardless.
+
+Between sub-issue dispatches, the orchestrator stays on its own primary issue
+branch and only runs `git fetch origin` to refresh remotes — it never moves
+to `main`.
+
 ## What This Does
 
 This plugin provides workflow skills that drive an **adversarial
