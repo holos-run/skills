@@ -359,15 +359,15 @@ Run the review command one final time. Parse the output.
 
    ```bash
    gh pr comment $PR_NUMBER --body "$(cat <<'EOF'
-   ## Unresolved Critical/Important Findings
+## Unresolved Critical/Important Findings
 
-   After 2 review rounds, the following findings remain unresolved:
+After 2 review rounds, the following findings remain unresolved:
 
-   <list each finding with file, line, and description>
+<list each finding with file, line, and description>
 
-   This PR requires human review before merge.
-   EOF
-   )"
+This PR requires human review before merge.
+EOF
+)"
    ```
 
 2. Add `needs-human-review` label on the PR:
@@ -787,7 +787,7 @@ Leave the parent in its current state. Add `needs-human-review` alongside `imple
 - **GitHub CLI**: `gh` authenticated with repo access
 - **Git**: Clean working directory
 - **Code review tool**: Configured in project's CLAUDE.md (optional — falls back to Claude sub-agent)
-- **Codex CLI**: Required only for sub-issues labeled `codex`
+- **Codex CLI**: Required for issues labeled `codex` (used for both implementation dispatch in Parent Mode and reviewer selection in Leaf Mode)
 
 ## Linear API Cheat Sheet
 
