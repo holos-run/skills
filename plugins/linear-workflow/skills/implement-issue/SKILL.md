@@ -1,14 +1,14 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.5.2
+version: 2.6.0
 ---
 
 # Implement Issue
 
 Implement a Linear issue end-to-end. This skill self-detects whether the issue is a leaf issue (no children) or a parent issue (has children) and adapts its behavior:
 
-- **Leaf mode**: Branch, implement, open PR, run adversarial code review (up to 2 fix rounds), wait for CI, merge, and mark Done.
+- **Leaf mode**: Branch, implement, open PR, run adversarial code review (label-aware reviewer selection — Sonnet by default, Opus or Codex when explicitly labeled), up to 2 fix rounds, wait for CI, merge, and mark Done.
 - **Parent mode**: Orchestrate implementation of all child issues with label-aware dispatch: Sonnet by default, Opus when explicitly labeled, Codex CLI when explicitly labeled, then track results, sweep for follow-ups, and post a summary.
 
 Implement the Linear issue **{{SKILL_INPUT}}**.
@@ -206,9 +206,9 @@ Run adversarial code review on the PR. Up to 2 fix rounds, then a final gate che
 
 #### L8a. Resolve the Review Command
 
-Choose the reviewer based on the issue's labels (recorded as `EXISTING_LABELS` in step 1), then resolve the review command. Lowercase label names before matching.
+Resolve which reviewer L8b will invoke. **L8a does not run the review** — it only selects the path and verifies prerequisites. L8b actually executes it.
 
-Detect variables (used by all paths below):
+Detect variables (used by all paths below). All shell snippets in this section are meant to be expanded by the runner's shell — `$PR_NUMBER`, `$BRANCH`, `$REPO` are real shell variables, not placeholders:
 
 ```bash
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
@@ -216,35 +216,43 @@ BRANCH=$(git rev-parse --abbrev-ref HEAD)
 PR_NUMBER=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].number')
 ```
 
-**Reviewer selection (in priority order):**
+**Reviewer selection (in priority order).** Lowercase the issue's `EXISTING_LABELS` (recorded in step 1) before matching:
 
-1. **Issue labeled `codex`** → use the Codex CLI reviewer (see "Codex reviewer" below). Do NOT silently downgrade to a Claude sub-agent — if Codex is unavailable, escalate.
-2. **Issue labeled `opus`** → use a Claude sub-agent with `model: "opus"` (see "Claude sub-agent reviewer").
-3. **Issue labeled `sonnet`** → use a Claude sub-agent with `model: "sonnet"`.
-4. **No routing label, project's `CLAUDE.md` or `AGENTS.md` contains a `## Code Review` section** with a fenced shell command → use that command.
-5. **No routing label and no project config** → fall back to a Claude sub-agent on `sonnet`.
+1. **Issue labeled `codex`** → Codex CLI reviewer.
+2. **Issue labeled `opus`** → Claude sub-agent with `model: "opus"`.
+3. **Issue labeled `sonnet`** → Claude sub-agent with `model: "sonnet"`.
+4. **No routing label, and project's `CLAUDE.md` or `AGENTS.md` contains a `## Code Review` section** with a fenced shell command → use that command.
+5. **No routing label and no project config** → Claude sub-agent on `sonnet`.
 
-If conflicting routing labels are present, prefer in this order: `codex` > `opus` > `sonnet`.
+If conflicting routing labels are present, prefer in this order: `codex` > `opus` > `sonnet`. **Routing labels always win over the project's `## Code Review` config.** When a routing label is present, the project config is not consulted — even if both happen to invoke the same backend (e.g., issue labeled `codex` and project config also runs `codex exec`), the routing-label path uses the prompt below, not the project's command.
 
 **Codex reviewer (when issue is labeled `codex`):**
 
-First verify the Codex CLI is on `PATH`:
+Verify the Codex CLI is on `PATH`:
 
 ```bash
 command -v codex >/dev/null
 ```
 
-If `codex` is not found, do NOT fall back to a Claude sub-agent. Instead, surface an explicit error and escalate per L8d:
+If `codex` is **not** found, do NOT fall back to a Claude sub-agent. Surface an explicit error and escalate now (do not proceed to L8b–L8d):
 
-- Post a comment on the PR explaining that the issue is labeled `codex` but the `codex` CLI is unavailable in this environment, so review cannot proceed with the requested reviewer.
-- Add the `needs-human-review` label to the PR and the Linear issue.
-- Skip to step L13 with result `ESCALATED`.
+```bash
+gh pr comment $PR_NUMBER --body "$(cat <<'EOF'
+## Code Review Cannot Proceed
 
-If `codex` is available, run:
+This issue is labeled `codex`, but the `codex` CLI is not available on PATH in this environment. The reviewer cannot silently downgrade to another model. Marking for human review.
+EOF
+)"
+gh pr edit $PR_NUMBER --add-label "needs-human-review"
+```
+
+Then call `mcp__linear-server__save_issue` with `issue: "<ISSUE_IDENTIFIER>"` and `labels: ["needs-human-review", ...existing]`. Skip directly to step L13 with result `ESCALATED`.
+
+If `codex` is available, the command L8b will run is:
 
 ```bash
 codex exec --dangerously-bypass-approvals-and-sandbox \
-  "You are an adversarial code reviewer. Review the diff of PR #$PR_NUMBER in $REPO on branch $BRANCH.
+  "You are an adversarial code reviewer. Review the diff of PR #$PR_NUMBER in $REPO.
 
 Run: gh pr diff $PR_NUMBER
 
@@ -281,11 +289,11 @@ codex exec --dangerously-bypass-approvals-and-sandbox \
 ```
 </pre>
 
-If found, use that command verbatim with the variables above.
+If found, that command is what L8b will run, with variables resolved from the shell.
 
 **Claude sub-agent reviewer (default fallback or explicit `sonnet`/`opus` label):**
 
-Spawn a Claude sub-agent for review:
+L8b will spawn a Claude sub-agent for review:
 
 ```
 Agent(
