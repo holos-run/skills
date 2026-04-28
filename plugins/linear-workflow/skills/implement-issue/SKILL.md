@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.8.0
+version: 2.8.1
 ---
 
 # Implement Issue
@@ -51,7 +51,7 @@ Record:
 - `EXISTING_LABELS`
 - `PARENT_IDENTIFIER` — if present, note it (this issue may be part of an implementation plan)
 
-### 1a. Check for Blocking Issues
+### 2. Check for Blocking Issues
 
 Before entering any implementation mode, check whether the issue is blocked by other open issues.
 
@@ -92,24 +92,24 @@ Filter to **active blockers**: those whose `BLOCKER_STATUS_TYPE` is NOT `complet
    All blocking issues are now Done or Canceled. Proceeding with implementation.
    ```
 
-**If no active blockers:** continue immediately to step 1b.
+**If no active blockers:** continue immediately to step 3.
 
-### 1b. Patch Missing Base-Branch Override on This Issue
+### 3. Patch Missing Base-Branch Override on This Issue
 
-Patch the issue's own description to ensure it begins with a Cyrus base-branch override tag of the form `[repo=<REPO_NAME>#main]`. This step runs for both Leaf and Parent paths — for Parent Mode it duplicates P0a (the algorithm is idempotent, so the second run is a no-op), and for Leaf Mode it is **preventive only**: L2 already branches from `origin/main` regardless of where the worktree was created, so the current invocation is unaffected. The patched description protects future re-assignments of this issue (e.g., if it later gains children and becomes a parent, or if Cyrus is re-assigned to it).
+Patch the issue's own description to ensure it begins with a Cyrus base-branch override tag of the form `[repo=<REPO_NAME>#main]`. This step runs for both Leaf and Parent paths — for Parent Mode it duplicates P1 (the algorithm is idempotent, so the second run is a no-op), and for Leaf Mode it is **preventive only**: L2 already branches from `origin/main` regardless of where the worktree was created, so the current invocation is unaffected. The patched description protects future re-assignments of this issue (e.g., if it later gains children and becomes a parent, or if Cyrus is re-assigned to it).
 
-Use the **same idempotent algorithm** as P4's "Pre-Dispatch: Patch Missing Base-Branch Override" sub-section, applied to `<ISSUE_IDENTIFIER>`:
+Use the **same idempotent algorithm** as P7's "Pre-Dispatch: Patch Missing Base-Branch Override" sub-section, applied to `<ISSUE_IDENTIFIER>`:
 
 1. Determine `<REPO_NAME>` once and cache it:
    ```bash
    REPO_NAME=$(gh repo view --json name -q .name)
    ```
 2. Fetch the issue's full description via `mcp__linear-server__get_issue` with `id: "<ISSUE_IDENTIFIER>"`. If the description is `null`, missing, or empty, treat it as the empty string for the rest of this step.
-3. Find the first non-empty line (skip leading blank/whitespace-only lines). Test it against `^\[repo=([^#\]]+)#main\]\s*$` and require the captured repo-name to equal `<REPO_NAME>`.
-4. **If matched:** continue to step 2.
+3. Find the first non-empty line (skip leading blank/whitespace-only lines). Test it against `^\\?\[repo=([^#\]]+)#main\\?\]\s*$` and require the captured repo-name to equal `<REPO_NAME>`. The optional backslash before each bracket accommodates Linear's markdown escaping — Linear's API frequently returns the tag as `\[repo=…\]`, and Cyrus's override matcher accepts both forms, so either counts as already-tagged.
+4. **If matched:** continue to step 4.
 5. **If missing or wrong:** patch the description:
    - Drop leading blank lines from the description.
-   - If the resulting first line matches `^\[repo=[^\]]+\]\s*$`, drop it and any blank lines that immediately follow.
+   - If the resulting first line matches `^\\?\[repo=[^\]]+\\?\]\s*$`, drop it and any blank lines that immediately follow.
    - Prepend `[repo=<REPO_NAME>#main]\n\n` to whatever remains.
    - Call `mcp__linear-server__save_issue` with `issue: "<ISSUE_IDENTIFIER>"` and the new `description`.
    - Post a comment on the issue via `mcp__linear-server__save_comment`:
@@ -117,9 +117,9 @@ Use the **same idempotent algorithm** as P4's "Pre-Dispatch: Patch Missing Base-
      Patched issue description to add [repo=<REPO_NAME>#main] base-branch override so future Cyrus assignments branch this issue's worktree from main rather than a parent issue's branch.
      ```
 
-This patch is idempotent and best-effort — failures here must not block implementation. If the Linear API call fails, log the error and continue to step 2.
+This patch is idempotent and best-effort — failures here must not block implementation. If the Linear API call fails, log the error and continue to step 4.
 
-### 2. Check for Children
+### 4. Check for Children
 
 Call `mcp__linear-server__list_issues` with `parentId: "<ISSUE_ID>"`.
 
@@ -233,15 +233,13 @@ EOF
 
 Use `ISSUE_IDENTIFIER` — the identifier of the issue currently being implemented. **Never add a `Fixes` line for the parent issue.** If this is a sub-issue, include only `Fixes <ISSUE_IDENTIFIER>` (the sub-issue), never `Fixes <PARENT_IDENTIFIER>`.
 
-**Deferred Acceptance Criteria section**: Include only if at least one AC from the issue was not satisfied. If every AC is addressed, omit the entire heading. Presence of this section with non-empty bullets blocks the Done transition in step L12.
+**Deferred Acceptance Criteria section**: Include only if at least one AC from the issue was not satisfied. If every AC is addressed, omit the entire heading. Presence of this section with non-empty bullets blocks the Done transition in step L15.
 
-### L8. Code Review Loop
+### L8. Resolve the Review Command
 
 Run adversarial code review on the PR. Up to 2 fix rounds, then a final gate check.
 
-#### L8a. Resolve the Review Command
-
-Resolve which reviewer L8b will invoke. **L8a does not run the review** — it only selects the path and verifies prerequisites. L8b actually executes it.
+Resolve which reviewer L9 will invoke. **L8 does not run the review** — it only selects the path and verifies prerequisites. L9 actually executes it.
 
 Detect variables (used by all paths below). All shell snippets in this section are meant to be expanded by the runner's shell — `$PR_NUMBER`, `$BRANCH`, `$REPO` are real shell variables, not placeholders:
 
@@ -269,7 +267,7 @@ Verify the Codex CLI is on `PATH`:
 command -v codex >/dev/null
 ```
 
-If `codex` is **not** found, do NOT fall back to a Claude sub-agent. Surface an explicit error and escalate now (do not proceed to L8b–L8d):
+If `codex` is **not** found, do NOT fall back to a Claude sub-agent. Surface an explicit error and escalate now (do not proceed to L9–L11):
 
 ```bash
 gh pr comment $PR_NUMBER --body "$(cat <<'EOF'
@@ -281,9 +279,9 @@ EOF
 gh pr edit $PR_NUMBER --add-label "needs-human-review"
 ```
 
-Then call `mcp__linear-server__save_issue` with `issue: "<ISSUE_IDENTIFIER>"` and `labels: ["needs-human-review", ...existing]`. Skip directly to step L13 with result `ESCALATED`.
+Then call `mcp__linear-server__save_issue` with `issue: "<ISSUE_IDENTIFIER>"` and `labels: ["needs-human-review", ...existing]`. Skip directly to step L16 with result `ESCALATED`.
 
-If `codex` is available, the command L8b will run is:
+If `codex` is available, the command L9 will run is:
 
 ```bash
 codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
@@ -324,11 +322,11 @@ codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
 ```
 </pre>
 
-If found, that command is what L8b will run, with variables resolved from the shell.
+If found, that command is what L9 will run, with variables resolved from the shell.
 
 **Claude sub-agent reviewer (default fallback or explicit `sonnet`/`opus` label):**
 
-L8b will spawn a Claude sub-agent for review:
+L9 will spawn a Claude sub-agent for review:
 
 ```
 Agent(
@@ -351,14 +349,14 @@ List each finding with file path, line number, severity, and description."
 )
 ```
 
-#### L8b. Round 1: Review and Fix
+### L9. Round 1: Review and Fix
 
 Run the review command (or fallback agent). Parse the output for:
 
 - **Verdict**: APPROVE or REQUEST_CHANGES
 - **Finding counts** by severity: CRITICAL, IMPORTANT, STYLE
 
-**If APPROVE (no findings):** Skip to step L9.
+**If APPROVE (no findings):** Skip to step L12.
 
 **If any findings:** Fix ALL findings — critical, important, and style. For each:
 
@@ -373,19 +371,19 @@ After all fixes:
 - Commit: `fix: address code review round 1 findings`
 - Push
 
-#### L8c. Round 2: Re-Review and Fix
+### L10. Round 2: Re-Review and Fix
 
 Run the review command again. Parse the output.
 
-- **If APPROVE:** Proceed to step L9.
-- **If style-only findings remain (no CRITICAL or IMPORTANT):** Proceed to step L9. Create a follow-up issue for style findings after merge (step L11).
-- **If CRITICAL or IMPORTANT findings remain:** Fix all findings, commit, push. Proceed to L8d.
+- **If APPROVE:** Proceed to step L12.
+- **If style-only findings remain (no CRITICAL or IMPORTANT):** Proceed to step L12. Create a follow-up issue for style findings after merge (step L14).
+- **If CRITICAL or IMPORTANT findings remain:** Fix all findings, commit, push. Proceed to L11.
 
-#### L8d. Final Review (Gate Check)
+### L11. Final Review (Gate Check)
 
 Run the review command one final time. Parse the output.
 
-- **If APPROVE or style-only:** Proceed to step L9.
+- **If APPROVE or style-only:** Proceed to step L12.
 - **If CRITICAL or IMPORTANT findings still remain:** Escalate.
 
 **Escalation:**
@@ -415,9 +413,9 @@ EOF
 
    Call `mcp__linear-server__save_issue` with `issue: "<ISSUE_IDENTIFIER>"` and `labels: ["needs-human-review", ...existing]`.
 
-4. Do NOT merge. Skip to step L13 with result ESCALATED.
+4. Do NOT merge. Skip to step L16 with result ESCALATED.
 
-### L9. Wait for CI and Fix Failures
+### L12. Wait for CI and Fix Failures
 
 After code review is complete, wait for CI checks.
 
@@ -431,11 +429,11 @@ If CI fails:
 2. Fix the issue locally, run the project's test suite
 3. Commit and push
 
-If CI still fails after one fix attempt, escalate (add `needs-human-review` per step L8d) and skip to step L13 with result ESCALATED.
+If CI still fails after one fix attempt, escalate (add `needs-human-review` per step L11) and skip to step L16 with result ESCALATED.
 
-### L10. Merge
+### L13. Merge
 
-Before merging, handle remaining style-only findings from round 2 by creating a follow-up issue (step L11).
+Before merging, handle remaining style-only findings from round 2 by creating a follow-up issue (step L14).
 
 ```bash
 gh pr merge $PR_NUMBER --merge --delete-branch
@@ -450,7 +448,7 @@ git push --force-with-lease
 gh pr merge $PR_NUMBER --merge --delete-branch
 ```
 
-### L11. Follow-Up Issue for Style Findings
+### L14. Follow-Up Issue for Style Findings
 
 If style-only findings remain after round 2, create a follow-up Linear issue:
 
@@ -473,11 +471,11 @@ PR #<PR_NUMBER> (issue <ISSUE_IDENTIFIER>) was merged with style-only review fin
 <paste remaining style findings>
 ```
 
-The `[repo=<REPO_NAME>#main]` override on the first line ensures Cyrus branches the follow-up's worktree from `main` rather than the parent issue's branch. With this template emitting the tag directly, the P5 sweep's pre-dispatch patch step is a no-op for normally-created follow-ups — it remains in place to cover manually-created or legacy follow-ups.
+The `[repo=<REPO_NAME>#main]` override on the first line ensures Cyrus branches the follow-up's worktree from `main` rather than the parent issue's branch. With this template emitting the tag directly, the P8 sweep's pre-dispatch patch step is a no-op for normally-created follow-ups — it remains in place to cover manually-created or legacy follow-ups.
 
 Record the follow-up identifier as `FOLLOW_UP_IDENTIFIER`.
 
-### L12. AC-Gate and Close Issue
+### L15. AC-Gate and Close Issue
 
 Before marking Done, check whether the PR lists deferred acceptance criteria:
 
@@ -502,7 +500,7 @@ Move to Done via `mcp__linear-server__save_issue`:
 - `state: "Done"`
 - `labels: [... existing labels minus "implementing"]`
 
-### L13. Post Summary
+### L16. Post Summary
 
 Calculate elapsed time and post a summary comment:
 
@@ -531,33 +529,23 @@ Call `mcp__linear-server__save_comment` with `issue: "<ISSUE_IDENTIFIER>"` and b
 
 Orchestrator for a parent issue with children. Uses label-aware dispatch to route each child issue to either a Claude Code sub-agent or the Codex CLI.
 
-### P0. Verify Primary Issue Branch and Rebase
+### P1. Patch Missing Base-Branch Override on the Primary Issue
 
-Before doing any orchestration work, ensure the session is on the **primary issue's branch** — never the parent issue's branch — and that the branch is rebased on the latest `origin/main`. Run this step at the top of **every** orchestrator invocation, including re-invocations and resumptions.
+Ensure the primary issue's own description begins with a Cyrus base-branch override tag. Plans created via `plan-issue` v2.3.0+ already include this tag, but legacy primaries (or primaries that were re-parented before the tag was added) may not. Without the tag, the next time Cyrus is assigned to this primary it could route the worktree off a parent issue's branch via the `parent-issue` rule instead of `main`.
 
-Define `IDENT_LC` as `ISSUE_IDENTIFIER` lowercased (e.g., `HOL-1061` → `hol-1061`). All branch-name comparisons in this step are **case-insensitive** — match the lowercased branch name against `IDENT_LC`.
-
-1. Determine the expected branch for the primary issue:
-   - Prefer `gitBranchName` from the `mcp__linear-server__get_issue` response (e.g., `jeff/hol-1061-…`).
-   - If absent, look for an existing local or remote branch whose lowercased name contains `IDENT_LC` (e.g., a `cyrus/hol-1061-…` worktree branch). Any such branch is acceptable as long as it is unique to this primary issue.
-
-#### P0a. Patch Missing Base-Branch Override on the Primary Issue
-
-Before verifying the current branch, ensure the primary issue's own description begins with a Cyrus base-branch override tag. Plans created via `plan-issue` v2.3.0+ already include this tag, but legacy primaries (or primaries that were re-parented before the tag was added) may not. Without the tag, the next time Cyrus is assigned to this primary it could route the worktree off a parent issue's branch via the `parent-issue` rule instead of `main`.
-
-This sub-step uses the **same idempotent algorithm** as P4's "Pre-Dispatch: Patch Missing Base-Branch Override" sub-section, applied to the primary issue itself.
+This step uses the **same idempotent algorithm** as P7's "Pre-Dispatch: Patch Missing Base-Branch Override" sub-section, applied to the primary issue itself.
 
 1. Determine `<REPO_NAME>` once and cache it for re-use throughout this skill invocation:
    ```bash
    REPO_NAME=$(gh repo view --json name -q .name)
    ```
 2. Fetch the primary issue's full description via `mcp__linear-server__get_issue` with `id: "<ISSUE_IDENTIFIER>"`. If the description is `null`, missing, or empty, treat it as the empty string for the rest of this step.
-3. Find the **first non-empty line** of the description (skip any leading blank or whitespace-only lines). If the description has no non-empty lines, treat the first non-empty line as `""`. Test that line against the regex `^\[repo=([^#\]]+)#main\]\s*$` and require the captured repo-name group to equal `<REPO_NAME>`.
-4. **If the first non-empty line matches the regex AND the captured repo-name equals `<REPO_NAME>`:** continue to step 2 (verify current branch). No patch needed.
-5. **If the tag is missing, points to a base branch other than `main`, or references a different repo-name:** patch the description with the same algorithm as P4 pre-dispatch:
+3. Find the **first non-empty line** of the description (skip any leading blank or whitespace-only lines). If the description has no non-empty lines, treat the first non-empty line as `""`. Test that line against the regex `^\\?\[repo=([^#\]]+)#main\\?\]\s*$` and require the captured repo-name group to equal `<REPO_NAME>`. The optional backslash before each bracket accommodates Linear's markdown escaping — Linear's API frequently returns the tag as `\[repo=…\]`, and Cyrus's override matcher accepts both the escaped and unescaped forms, so either counts as already-tagged.
+4. **If the first non-empty line matches the regex AND the captured repo-name equals `<REPO_NAME>`:** continue to P2. No patch needed.
+5. **If the tag is missing, points to a base branch other than `main`, or references a different repo-name:** patch the description with the same algorithm as P7 pre-dispatch:
    - Build the new description:
      1. Drop all leading blank or whitespace-only lines from the description.
-     2. If the new first line (after step 1) matches the prefix regex `^\[repo=[^\]]+\]\s*$`, drop that line **and** any blank or whitespace-only lines that immediately follow it.
+     2. If the new first line (after step 1) matches the prefix regex `^\\?\[repo=[^\]]+\\?\]\s*$`, drop that line **and** any blank or whitespace-only lines that immediately follow it.
      3. Prepend `[repo=<REPO_NAME>#main]\n\n` to whatever remains. If the remainder is empty, the patched description is `[repo=<REPO_NAME>#main]\n`.
    - Call `mcp__linear-server__save_issue` with `issue: "<ISSUE_IDENTIFIER>"` and the new `description`.
    - Post a comment on the primary issue via `mcp__linear-server__save_comment`:
@@ -566,6 +554,16 @@ This sub-step uses the **same idempotent algorithm** as P4's "Pre-Dispatch: Patc
      ```
 
 This step is idempotent — re-running on a correctly-tagged primary is a no-op.
+
+### P2. Verify Primary Issue Branch and Rebase
+
+Before doing any orchestration work, ensure the session is on the **primary issue's branch** — never the parent issue's branch — and that the branch is rebased on the latest `origin/main`. Run this step at the top of **every** orchestrator invocation, including re-invocations and resumptions.
+
+Define `IDENT_LC` as `ISSUE_IDENTIFIER` lowercased (e.g., `HOL-1061` → `hol-1061`). All branch-name comparisons in this step are **case-insensitive** — match the lowercased branch name against `IDENT_LC`.
+
+1. Determine the expected branch for the primary issue:
+   - Prefer `gitBranchName` from the `mcp__linear-server__get_issue` response (e.g., `jeff/hol-1061-…`).
+   - If absent, look for an existing local or remote branch whose lowercased name contains `IDENT_LC` (e.g., a `cyrus/hol-1061-…` worktree branch). Any such branch is acceptable as long as it is unique to this primary issue.
 
 2. Verify the **current** branch belongs to the primary issue. The lowercased current branch name must contain `IDENT_LC`. If it does not — for example, the branch contains the parent issue's identifier instead — abort:
 
@@ -599,7 +597,7 @@ This step is idempotent — re-running on a correctly-tagged primary is a no-op.
    Reset the plan branch to origin/main. Sub-issue workers will branch from origin/main as designed.
    ```
 
-   Then continue to P1 — the plan branch now matches `origin/main` exactly.
+   Then continue to P3 — the plan branch now matches `origin/main` exactly.
 
    **If `$FOREIGN_COMMITS` is empty:** fall through to the existing rebase path:
 
@@ -619,13 +617,13 @@ This step is idempotent — re-running on a correctly-tagged primary is a no-op.
    - Post a comment on the issue listing the captured conflicting paths from `$CONFLICTS`.
    - Add `needs-human-review` to the issue and stop the skill.
 
-### P1. Start Wall Clock Timer
+### P3. Start Wall Clock Timer
 
 ```bash
 PLAN_START_TIME=$(date +%s)
 ```
 
-### P2. List Children
+### P4. List Children
 
 Call `mcp__linear-server__list_issues` with `parentId: "<ISSUE_ID>"`, sorted by creation time ascending.
 
@@ -641,21 +639,21 @@ Skip any child whose status is `completed` or `canceled`.
 
 If no open children remain, post a comment that all work is complete and stop.
 
-### P2a. Review Existing Progress
+### P5. Review Existing Progress
 
-After listing children in P2, inspect the diff between `origin/main` and `HEAD` to detect work already implemented in this branch from a prior orchestrator session. The orchestrator **must not** re-implement what already landed on `main` or what already exists as commits on the primary issue branch.
+After listing children in P4, inspect the diff between `origin/main` and `HEAD` to detect work already implemented in this branch from a prior orchestrator session. The orchestrator **must not** re-implement what already landed on `main` or what already exists as commits on the primary issue branch.
 
 ```bash
 git log --oneline origin/main..HEAD
 git diff --stat origin/main..HEAD
 ```
 
-Classify each open sub-issue from P2 as **already-implemented** when either of the following holds:
+Classify each open sub-issue from P4 as **already-implemented** when either of the following holds:
 
-- Its Linear status is `completed` or `canceled` — the rebase has already incorporated any merged work from `origin/main`, so nothing remains to do. (P2 already filters these out, but list them in the resume comment for visibility.)
+- Its Linear status is `completed` or `canceled` — the rebase has already incorporated any merged work from `origin/main`, so nothing remains to do. (P4 already filters these out, but list them in the resume comment for visibility.)
 - A commit message on the primary issue branch (`origin/main..HEAD`) references the sub-issue's identifier — for example, `feat(...): … Refs: APP-301` or any commit subject/body that includes the identifier in the form `<TEAM>-<NUMBER>`. This indicates a prior orchestrator session committed work for that sub-issue without merging.
 
-Build a `SKIP_SUB_ISSUES` set containing every already-implemented sub-issue identifier. The dispatch step (P4) **must consult `SKIP_SUB_ISSUES` and skip any sub-issue in it** — do not dispatch a worker for those identifiers and do not delete their existing branch state.
+Build a `SKIP_SUB_ISSUES` set containing every already-implemented sub-issue identifier. The dispatch step (P7) **must consult `SKIP_SUB_ISSUES` and skip any sub-issue in it** — do not dispatch a worker for those identifiers and do not delete their existing branch state.
 
 Post a brief comment on the parent issue summarizing the orchestration state:
 
@@ -668,7 +666,7 @@ Post a brief comment on the parent issue summarizing the orchestration state:
 - Remaining sub-issues to dispatch: <list of identifiers>
 ```
 
-### P3. Transition Labels
+### P6. Transition Labels
 
 Replace `planning` with `implementing` on the parent issue.
 
@@ -677,17 +675,17 @@ Ensure the `implementing` label exists. Then call `mcp__linear-server__save_issu
 - `issue: "<ISSUE_IDENTIFIER>"`
 - `labels: ["implementing", ...existing labels minus "planning"]`
 
-### P4. Dispatch Sub-Issues
+### P7. Dispatch Sub-Issues
 
 Process sub-issues **sequentially** (each phase depends on the previous one). Before dispatching each open child, the orchestrator (this session) must inspect that sub-issue's labels and choose the implementation runner from those labels. The dispatched worker runs the full leaf lifecycle for that one sub-issue and returns a short result summary.
 
-Capture the orchestrator's primary issue branch once at the start of P4 — pre-dispatch cleanup may need to switch back to it if a previous run crashed while a sub-issue branch was checked out:
+Capture the orchestrator's primary issue branch once at the start of P7 — pre-dispatch cleanup may need to switch back to it if a previous run crashed while a sub-issue branch was checked out:
 
 ```bash
 PRIMARY_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 ```
 
-**Honor the `SKIP_SUB_ISSUES` set built in P2a**: if a sub-issue's identifier appears in `SKIP_SUB_ISSUES`, skip it entirely — do not run pre-dispatch cleanup, do not dispatch a worker, and do not delete its branch or PR. Move on to the next sub-issue.
+**Honor the `SKIP_SUB_ISSUES` set built in P5**: if a sub-issue's identifier appears in `SKIP_SUB_ISSUES`, skip it entirely — do not run pre-dispatch cleanup, do not dispatch a worker, and do not delete its branch or PR. Move on to the next sub-issue.
 
 #### Pre-Dispatch: Patch Missing Base-Branch Override
 
@@ -700,12 +698,12 @@ For each open child not in `SKIP_SUB_ISSUES`:
    REPO_NAME=$(gh repo view --json name -q .name)
    ```
 2. Fetch the child's full description via `mcp__linear-server__get_issue` with `id: "<SUB_IDENTIFIER>"`. If the description is `null`, missing, or empty, treat it as the empty string for the rest of this step.
-3. Find the **first non-empty line** of the description (skip any leading blank or whitespace-only lines). If the description has no non-empty lines, treat the first non-empty line as `""`. Test that line against the regex `^\[repo=([^#\]]+)#main\]\s*$` and require the captured repo-name group to equal `<REPO_NAME>`.
+3. Find the **first non-empty line** of the description (skip any leading blank or whitespace-only lines). If the description has no non-empty lines, treat the first non-empty line as `""`. Test that line against the regex `^\\?\[repo=([^#\]]+)#main\\?\]\s*$` and require the captured repo-name group to equal `<REPO_NAME>`. The optional backslash before each bracket accommodates Linear's markdown escaping — Linear's API frequently returns the tag as `\[repo=…\]`, and Cyrus's override matcher accepts both forms, so either counts as already-tagged and falls through without patching.
 4. **If the first non-empty line matches the regex AND the captured repo-name equals `<REPO_NAME>`:** continue to the next pre-dispatch step.
 5. **If the tag is missing, points to a base branch other than `main` (e.g., `[repo=skills#hol-1028-…]`), or references a different repo-name (e.g., `[repo=wrong-repo#main]` when this repo is `skills`):** patch the description:
    - Build the new description with this algorithm:
      1. Drop all leading blank or whitespace-only lines from the description.
-     2. If the new first line (after step 1) matches the prefix regex `^\[repo=[^\]]+\]\s*$`, drop that line **and** any blank or whitespace-only lines that immediately follow it. (This anchor at "first line after stripping leading blanks" prevents accidentally stripping a `[repo=…]` token that happens to appear deeper in the body.)
+     2. If the new first line (after step 1) matches the prefix regex `^\\?\[repo=[^\]]+\\?\]\s*$`, drop that line **and** any blank or whitespace-only lines that immediately follow it. (This anchor at "first line after stripping leading blanks" prevents accidentally stripping a `[repo=…]` token that happens to appear deeper in the body.)
      3. Prepend `[repo=<REPO_NAME>#main]\n\n` to whatever remains. If the remainder is empty, the patched description is `[repo=<REPO_NAME>#main]\n`.
    - Call `mcp__linear-server__save_issue` with `issue: "<SUB_IDENTIFIER>"` and the new `description`.
    - Post a comment on the sub-issue via `mcp__linear-server__save_comment`:
@@ -740,7 +738,7 @@ If partial work exists (`SUB_BRANCH` or `SUB_OPEN_PR` is non-empty):
    ```bash
    git push origin --delete "$SUB_BRANCH" 2>/dev/null || true
    ```
-3. If `$SUB_BRANCH` is the current branch (a previous orchestrator session crashed while it was checked out), switch back to the orchestrator's primary issue branch first — `git branch -D` will refuse to delete a checked-out branch. The orchestrator already knows its primary branch from P0; capture it once at the start of P4 as `PRIMARY_BRANCH` and reuse here:
+3. If `$SUB_BRANCH` is the current branch (a previous orchestrator session crashed while it was checked out), switch back to the orchestrator's primary issue branch first — `git branch -D` will refuse to delete a checked-out branch. The orchestrator already knows its primary branch from P2; capture it once at the start of P7 as `PRIMARY_BRANCH` and reuse here:
    ```bash
    if [ "$(git rev-parse --abbrev-ref HEAD)" = "$SUB_BRANCH" ]; then
      git checkout "$PRIMARY_BRANCH"
@@ -750,7 +748,7 @@ If partial work exists (`SUB_BRANCH` or `SUB_OPEN_PR` is non-empty):
    ```bash
    git branch -D "$SUB_BRANCH" 2>/dev/null || true
    ```
-5. Refresh `origin/main` without checking out `main` locally. The orchestrator stays on its own primary issue branch (e.g., `cyrus/hol-XXXX-…` or `jeff/hol-XXXX-…`) — that branch is already rebased on `origin/main` per P0, so a plain fetch is sufficient. **Do not run `git checkout main`**: `main` is checked out in another worktree and the checkout will fail.
+5. Refresh `origin/main` without checking out `main` locally. The orchestrator stays on its own primary issue branch (e.g., `cyrus/hol-XXXX-…` or `jeff/hol-XXXX-…`) — that branch is already rebased on `origin/main` per P2, so a plain fetch is sufficient. **Do not run `git checkout main`**: `main` is checked out in another worktree and the checkout will fail.
    ```bash
    git fetch origin
    ```
@@ -890,21 +888,21 @@ After each sub-issue, refresh `origin/main`. The orchestrator stays on its own p
 git fetch origin
 ```
 
-### P5. Sweep for Follow-Up Issues
+### P8. Sweep for Follow-Up Issues
 
 After all original children are processed, re-list children via `mcp__linear-server__list_issues` with `parentId: "<ISSUE_ID>"`.
 
 Compare against the original list. Any new open child is a follow-up created during review.
 
-Process follow-ups with the **full P4 pre-dispatch sequence** — including the *Pre-Dispatch: Patch Missing Base-Branch Override* step and the *Pre-Dispatch: Detect and Discard Partial Work* step — then dispatch one worker per follow-up using the same label-routing rules. Normally-created follow-ups already emit the override tag via the L11 template, so the patch step is a no-op for them; it remains load-bearing for manually-created or legacy follow-ups that lack the tag.
+Process follow-ups with the **full P7 pre-dispatch sequence** — including the *Pre-Dispatch: Patch Missing Base-Branch Override* step and the *Pre-Dispatch: Detect and Discard Partial Work* step — then dispatch one worker per follow-up using the same label-routing rules. Normally-created follow-ups already emit the override tag via the L14 template, so the patch step is a no-op for them; it remains load-bearing for manually-created or legacy follow-ups that lack the tag.
 
-### P6. Nested Parent Issues
+### P9. Nested Parent Issues
 
-If a sub-issue or follow-up is itself a parent (has its own children), the dispatched worker invoked in P4 will simply re-enter this skill in Parent Mode and orchestrate its own children with the same label-routing rules — including the full P4 pre-dispatch sequence (override patch + partial-work cleanup) for each grand-child. Nested orchestration composes naturally — no special handling is needed for depth beyond re-checking labels at each parent.
+If a sub-issue or follow-up is itself a parent (has its own children), the dispatched worker invoked in P7 will simply re-enter this skill in Parent Mode and orchestrate its own children with the same label-routing rules — including the full P7 pre-dispatch sequence (override patch + partial-work cleanup) for each grand-child. Nested orchestration composes naturally — no special handling is needed for depth beyond re-checking labels at each parent.
 
 By default, nested parent orchestrators should also run on **Sonnet**. Use **Opus** only when the nested parent issue is explicitly labeled `opus`; use **Codex CLI** when it is explicitly labeled `codex`.
 
-### P7. Post Summary
+### P10. Post Summary
 
 Calculate total elapsed time:
 
@@ -944,7 +942,7 @@ If any sub-issue is ESCALATED or MERGED_WITH_DEFERRED_ACS, add:
 **Action required**: Some sub-issues need human attention before this plan can close.
 ```
 
-### P8. Close Parent
+### P11. Close Parent
 
 Check all children via `mcp__linear-server__list_issues` with `parentId: "<ISSUE_ID>"`.
 
