@@ -1,7 +1,7 @@
 ---
 name: plan-issue
 description: Create an implementation plan for a Linear issue. Use this skill when the user provides a Linear issue (URL or identifier like APP-123) and wants a plan broken into phases, with each phase tracked as a Linear sub-issue. Creates a NEW primary issue with the structured plan and relates it back to the original. Triggers on phrases like "plan this issue", "plan issue for", "break this Linear issue into phases", or any request to produce a phased plan against a Linear issue.
-version: 2.3.0
+version: 2.4.0
 ---
 
 # Plan Issue
@@ -192,6 +192,16 @@ Part of <PRIMARY_IDENTIFIER>
 
 Record each created sub-issue's `identifier` and `id`.
 
+After creating all phase sub-issues, add Linear dependency relationships between them so the execution order is visible in Linear itself:
+
+- Link phases as a sequential chain: phase 1 blocks phase 2, phase 2 blocks phase 3, etc.
+- For each adjacent pair `(PREV, CURR)`, call `mcp__linear-server__save_issue` on the previous phase issue with:
+  - `issue: "<PREV_IDENTIFIER>"`
+  - `blocks: ["<CURR_IDENTIFIER>"]`
+- Equivalent `blockedBy` relationships will appear on downstream phases in Linear.
+
+Do **not** create blocking relationships between the parent primary issue and any phase sub-issue. The parent issue should remain independently movable to `In Progress` while children are implemented over time.
+
 ### 9. Update the Primary Issue with Phase References
 
 After all sub-issues are created, update the primary issue description to list them. Call `mcp__linear-server__save_issue` with `issue: "<PRIMARY_IDENTIFIER>"` and `description`. Preserve the `[repo=<REPO_NAME>#main]` tag as the first line of the description; only the `## Implementation Plan` section changes. The updated section reads:
@@ -254,6 +264,7 @@ After all issues are created, report a summary:
 - **Cleanup phase**: Every plan ends with a cleanup phase.
 - **Per-sub-issue base-branch override**: Every sub-issue description starts with `[repo=<REPO_NAME>#main]` so each phase's worktree is branched off `main`, not the parent issue's branch.
 - **Primary plan issue base-branch override**: The primary plan issue's description also starts with `[repo=<REPO_NAME>#main]`. Primary plan issues have no Linear parent at creation time, so the tag is a no-op for routing today — but plan primaries are routinely re-parented under epics or umbrellas, and without the tag they would inherit the parent's branch on the next Cyrus assignment.
+- **Sub-issue dependency graph**: Add `blocks` relationships between consecutive phase sub-issues only; never set phase sub-issues to block the parent issue.
 
 ## Linear API Cheat Sheet
 
