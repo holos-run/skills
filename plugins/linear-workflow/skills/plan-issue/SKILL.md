@@ -1,7 +1,7 @@
 ---
 name: plan-issue
 description: Create an implementation plan for a Linear issue. Use this skill when the user provides a Linear issue (URL or identifier like APP-123) and wants a plan broken into phases, with each phase tracked as a Linear sub-issue. Creates a NEW primary issue with the structured plan and relates it back to the original. Triggers on phrases like "plan this issue", "plan issue for", "break this Linear issue into phases", or any request to produce a phased plan against a Linear issue.
-version: 2.2.0
+version: 2.3.0
 ---
 
 # Plan Issue
@@ -75,7 +75,13 @@ Review the issue body and the user's prompt. If the acceptance criteria is ambig
 
 ### 5. Explore the Codebase
 
-Explore the relevant areas of the codebase to understand the architecture, existing patterns, and test conventions. Use the information from project configuration files (step 3) to guide exploration.
+Determine `<REPO_NAME>` once before exploring. This value is reused by Step 7 (primary issue tag) and Step 8 (sub-issue tags), and must match the repository entry in the operator's Cyrus config — the same value Cyrus's `RepositoryRouter` matches against:
+
+```bash
+REPO_NAME=$(gh repo view --json name -q .name)
+```
+
+Then explore the relevant areas of the codebase to understand the architecture, existing patterns, and test conventions. Use the information from project configuration files (step 3) to guide exploration.
 
 ### 6. Draft the Implementation Plan
 
@@ -98,9 +104,11 @@ Create a new Linear issue that serves as the implementation primary issue. Call 
 
 Record the new issue's `identifier` (e.g., `APP-124`) and `id` (UUID) as `PRIMARY_IDENTIFIER` and `PRIMARY_ID`.
 
-**Master plan template** (substitute real content, real newlines):
+**Master plan template** (substitute real content, real newlines). The first line **must** be the Cyrus base-branch override tag — primary plan issues are routinely re-parented under epics or umbrellas, which would otherwise expose them to Cyrus's `parent-issue` rule (`determineBaseBranch` priority 2). The tag forces every future Cyrus assignment to branch the worktree from `main` rather than the new parent's branch:
 
 ```markdown
+[repo=<REPO_NAME>#main]
+
 ## Problem
 
 <Describe the problem or motivation from the original issue.>
@@ -127,13 +135,11 @@ To implement a single phase, invoke `/linear-workflow:implement-issue <PHASE_IDE
 Planned from <ORIGINAL_IDENTIFIER>.
 ```
 
-If the original issue had a non-empty body, preserve it in the `## Problem` section or under a `## Original Description` heading.
+If the original issue had a non-empty body, preserve it in the `## Problem` section or under a `## Original Description` heading. The `[repo=<REPO_NAME>#main]` tag block must always appear **before** any preserved content — drop leading blank lines from the preserved body, then prepend the tag block followed by a blank line.
 
 ### 8. Create Sub-Issues for Each Phase
 
-For each phase, create a Linear sub-issue as a child of the new primary issue.
-
-**Determine `<REPO_NAME>` once** before creating any sub-issues by running `gh repo view --json name -q .name` from the project's working directory. This is the value Cyrus's `RepositoryRouter` matches against — it must match the repository entry in the operator's Cyrus config.
+For each phase, create a Linear sub-issue as a child of the new primary issue. Reuse the `<REPO_NAME>` resolved at the top of Step 5.
 
 Each sub-issue's description **must begin** with a Cyrus base-branch override tag on its very first line:
 
@@ -188,7 +194,7 @@ Record each created sub-issue's `identifier` and `id`.
 
 ### 9. Update the Primary Issue with Phase References
 
-After all sub-issues are created, update the primary issue description to list them. Call `mcp__linear-server__save_issue` with `issue: "<PRIMARY_IDENTIFIER>"` and `description` where the `## Implementation Plan` section reads:
+After all sub-issues are created, update the primary issue description to list them. Call `mcp__linear-server__save_issue` with `issue: "<PRIMARY_IDENTIFIER>"` and `description`. Preserve the `[repo=<REPO_NAME>#main]` tag as the first line of the description; only the `## Implementation Plan` section changes. The updated section reads:
 
 ```markdown
 ## Implementation Plan
@@ -247,6 +253,7 @@ After all issues are created, report a summary:
 - **Self-contained phases**: Each phase leaves the codebase compiling and tests passing.
 - **Cleanup phase**: Every plan ends with a cleanup phase.
 - **Per-sub-issue base-branch override**: Every sub-issue description starts with `[repo=<REPO_NAME>#main]` so each phase's worktree is branched off `main`, not the parent issue's branch.
+- **Primary plan issue base-branch override**: The primary plan issue's description also starts with `[repo=<REPO_NAME>#main]`. Primary plan issues have no Linear parent at creation time, so the tag is a no-op for routing today — but plan primaries are routinely re-parented under epics or umbrellas, and without the tag they would inherit the parent's branch on the next Cyrus assignment.
 
 ## Linear API Cheat Sheet
 

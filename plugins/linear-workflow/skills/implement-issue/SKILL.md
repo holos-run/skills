@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.7.0
+version: 2.8.0
 ---
 
 # Implement Issue
@@ -92,7 +92,32 @@ Filter to **active blockers**: those whose `BLOCKER_STATUS_TYPE` is NOT `complet
    All blocking issues are now Done or Canceled. Proceeding with implementation.
    ```
 
-**If no active blockers:** continue immediately to step 2.
+**If no active blockers:** continue immediately to step 1b.
+
+### 1b. Patch Missing Base-Branch Override on This Issue
+
+Patch the issue's own description to ensure it begins with a Cyrus base-branch override tag of the form `[repo=<REPO_NAME>#main]`. This step runs for both Leaf and Parent paths — for Parent Mode it duplicates P0a (the algorithm is idempotent, so the second run is a no-op), and for Leaf Mode it is **preventive only**: L2 already branches from `origin/main` regardless of where the worktree was created, so the current invocation is unaffected. The patched description protects future re-assignments of this issue (e.g., if it later gains children and becomes a parent, or if Cyrus is re-assigned to it).
+
+Use the **same idempotent algorithm** as P4's "Pre-Dispatch: Patch Missing Base-Branch Override" sub-section, applied to `<ISSUE_IDENTIFIER>`:
+
+1. Determine `<REPO_NAME>` once and cache it:
+   ```bash
+   REPO_NAME=$(gh repo view --json name -q .name)
+   ```
+2. Fetch the issue's full description via `mcp__linear-server__get_issue` with `id: "<ISSUE_IDENTIFIER>"`. If the description is `null`, missing, or empty, treat it as the empty string for the rest of this step.
+3. Find the first non-empty line (skip leading blank/whitespace-only lines). Test it against `^\[repo=([^#\]]+)#main\]\s*$` and require the captured repo-name to equal `<REPO_NAME>`.
+4. **If matched:** continue to step 2.
+5. **If missing or wrong:** patch the description:
+   - Drop leading blank lines from the description.
+   - If the resulting first line matches `^\[repo=[^\]]+\]\s*$`, drop it and any blank lines that immediately follow.
+   - Prepend `[repo=<REPO_NAME>#main]\n\n` to whatever remains.
+   - Call `mcp__linear-server__save_issue` with `issue: "<ISSUE_IDENTIFIER>"` and the new `description`.
+   - Post a comment on the issue via `mcp__linear-server__save_comment`:
+     ```
+     Patched issue description to add [repo=<REPO_NAME>#main] base-branch override so future Cyrus assignments branch this issue's worktree from main rather than a parent issue's branch.
+     ```
+
+This patch is idempotent and best-effort — failures here must not block implementation. If the Linear API call fails, log the error and continue to step 2.
 
 ### 2. Check for Children
 
@@ -516,6 +541,32 @@ Define `IDENT_LC` as `ISSUE_IDENTIFIER` lowercased (e.g., `HOL-1061` → `hol-10
    - Prefer `gitBranchName` from the `mcp__linear-server__get_issue` response (e.g., `jeff/hol-1061-…`).
    - If absent, look for an existing local or remote branch whose lowercased name contains `IDENT_LC` (e.g., a `cyrus/hol-1061-…` worktree branch). Any such branch is acceptable as long as it is unique to this primary issue.
 
+#### P0a. Patch Missing Base-Branch Override on the Primary Issue
+
+Before verifying the current branch, ensure the primary issue's own description begins with a Cyrus base-branch override tag. Plans created via `plan-issue` v2.3.0+ already include this tag, but legacy primaries (or primaries that were re-parented before the tag was added) may not. Without the tag, the next time Cyrus is assigned to this primary it could route the worktree off a parent issue's branch via the `parent-issue` rule instead of `main`.
+
+This sub-step uses the **same idempotent algorithm** as P4's "Pre-Dispatch: Patch Missing Base-Branch Override" sub-section, applied to the primary issue itself.
+
+1. Determine `<REPO_NAME>` once and cache it for re-use throughout this skill invocation:
+   ```bash
+   REPO_NAME=$(gh repo view --json name -q .name)
+   ```
+2. Fetch the primary issue's full description via `mcp__linear-server__get_issue` with `id: "<ISSUE_IDENTIFIER>"`. If the description is `null`, missing, or empty, treat it as the empty string for the rest of this step.
+3. Find the **first non-empty line** of the description (skip any leading blank or whitespace-only lines). If the description has no non-empty lines, treat the first non-empty line as `""`. Test that line against the regex `^\[repo=([^#\]]+)#main\]\s*$` and require the captured repo-name group to equal `<REPO_NAME>`.
+4. **If the first non-empty line matches the regex AND the captured repo-name equals `<REPO_NAME>`:** continue to step 2 (verify current branch). No patch needed.
+5. **If the tag is missing, points to a base branch other than `main`, or references a different repo-name:** patch the description with the same algorithm as P4 pre-dispatch:
+   - Build the new description:
+     1. Drop all leading blank or whitespace-only lines from the description.
+     2. If the new first line (after step 1) matches the prefix regex `^\[repo=[^\]]+\]\s*$`, drop that line **and** any blank or whitespace-only lines that immediately follow it.
+     3. Prepend `[repo=<REPO_NAME>#main]\n\n` to whatever remains. If the remainder is empty, the patched description is `[repo=<REPO_NAME>#main]\n`.
+   - Call `mcp__linear-server__save_issue` with `issue: "<ISSUE_IDENTIFIER>"` and the new `description`.
+   - Post a comment on the primary issue via `mcp__linear-server__save_comment`:
+     ```
+     Patched primary issue description to add [repo=<REPO_NAME>#main] base-branch override so future re-assignments branch from main rather than the parent issue's branch.
+     ```
+
+This step is idempotent — re-running on a correctly-tagged primary is a no-op.
+
 2. Verify the **current** branch belongs to the primary issue. The lowercased current branch name must contain `IDENT_LC`. If it does not — for example, the branch contains the parent issue's identifier instead — abort:
 
    - Ensure the `needs-human-review` label exists for the team (call `mcp__linear-server__list_issue_labels`; create it via `mcp__linear-server__create_issue_label` if missing).
@@ -525,10 +576,34 @@ Define `IDENT_LC` as `ISSUE_IDENTIFIER` lowercased (e.g., `HOL-1061` → `hol-10
      ```
    - Add `needs-human-review` to the issue and stop the skill.
 
-3. Fetch and rebase on the latest `origin/main`:
+3. Fetch the latest `origin/main`, then check for **parent-branch contamination** on the plan branch before rebasing. The orchestrator never commits to the plan branch (all real work goes to sub-issue feature branches), so any commits between `origin/main` and HEAD that reference foreign issue identifiers indicate the worktree was originally branched off the wrong base — typically a Linear parent's branch, picked up by Cyrus's `parent-issue` rule before the override tag was in place. A plain rebase would replay those foreign commits onto `origin/main`, polluting the plan branch:
 
    ```bash
    git fetch origin
+   FOREIGN_COMMITS=$(git log --format='%H %s%n%b' origin/main..HEAD \
+     | grep -oE '[A-Z]{2,}-[0-9]+' \
+     | grep -v "^${ISSUE_IDENTIFIER}$" \
+     | sort -u)
+   ```
+
+   **If `$FOREIGN_COMMITS` is non-empty:** hard-reset the plan branch to `origin/main` and post a recovery comment. The reset is safe because the orchestrator never commits to the plan branch — there is no work to preserve:
+
+   ```bash
+   git reset --hard origin/main
+   ```
+
+   Post a comment on the primary issue via `mcp__linear-server__save_comment`:
+
+   ```
+   Detected parent-branch contamination on the plan branch (commits referencing: <list of foreign identifiers>).
+   Reset the plan branch to origin/main. Sub-issue workers will branch from origin/main as designed.
+   ```
+
+   Then continue to P1 — the plan branch now matches `origin/main` exactly.
+
+   **If `$FOREIGN_COMMITS` is empty:** fall through to the existing rebase path:
+
+   ```bash
    git rebase origin/main
    ```
 
