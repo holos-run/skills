@@ -11,7 +11,7 @@
       "name": "linear-workflow",
       "source": "./plugins/linear-workflow",
       "description": "Tight orchestration loop for plan, implement, and review, plus holos-console frontend implementation skills.",
-      "version": "2.4.1"
+      "version": "2.9.0"
     },
     {
       "name": "linear-sonnet",
