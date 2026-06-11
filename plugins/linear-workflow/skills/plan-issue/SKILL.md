@@ -1,7 +1,7 @@
 ---
 name: plan-issue
-description: Create an implementation plan for a Linear issue. Use this skill when the user provides a Linear issue (URL or identifier like APP-123) and wants a plan broken into phases, with each phase tracked as a Linear sub-issue. Creates a NEW primary issue with the structured plan and relates it back to the original. Triggers on phrases like "plan this issue", "plan issue for", "break this Linear issue into phases", or any request to produce a phased plan against a Linear issue.
-version: 2.4.0
+description: Create an implementation plan for a Linear issue. Use this skill when the user provides a Linear issue (URL or identifier like APP-123) and wants a plan broken into phases, with each phase tracked as a Linear sub-issue. Creates a NEW primary issue with the structured plan and relates it back to the original. Accepts an optional --model argument to pin implementation to a specific model; otherwise implementation inherits the session-configured model. Triggers on phrases like "plan this issue", "plan issue for", "break this Linear issue into phases", or any request to produce a phased plan against a Linear issue.
+version: 2.5.0
 ---
 
 # Plan Issue
@@ -11,6 +11,19 @@ You are a principal engineer. Explore the codebase, produce an implementation pl
 The input issue represents the task "plan this feature." When planning is complete, that task is done. The new primary issue represents the task "implement this feature" and has its own lifecycle.
 
 Plan the Linear issue **{{SKILL_INPUT}}**.
+
+## Arguments
+
+`{{SKILL_INPUT}}` contains the issue reference and optional flags:
+
+```
+<issue> [--model <fable|opus|sonnet|haiku|codex>]
+```
+
+- `<issue>` — Linear issue identifier (`APP-123`) or URL.
+- `--model <name>` (also accepted as `model=<name>`) — pins implementation of this plan to a specific model. When present, record it as `MODEL_OVERRIDE` and apply it as a routing label to the primary issue and every phase sub-issue (steps 7–8), so `implement-issue` dispatches all work to that model. When absent, apply **no** routing label — implementation workers then inherit the model configured for the Claude Code session (e.g., Fable or Opus). Inheriting the session model is the default and preferred behavior; only pin a model when the user explicitly asks for one.
+
+Strip any flags from `{{SKILL_INPUT}}` before parsing the issue reference in step 1.
 
 ## Linear Conventions
 
@@ -92,7 +105,10 @@ Break the implementation into sequential phases. Each phase should be a self-con
 - Phase ordering should follow the project's natural dependency graph (e.g., interface changes before implementation, backend before frontend).
 - Each phase includes the testing approach appropriate for the project (read from CLAUDE.md / AGENTS.md).
 - Every plan ends with a cleanup phase to remove stale code and documentation.
-- Phases should be small enough for one agent to implement in a single session.
+- Phases should be small enough for one agent to implement in a single session, and large enough to be a meaningful PR. Prefer 2–6 phases; merge trivial phases into their neighbors rather than creating one-line-change sub-issues.
+- **Each sub-issue must be self-contained.** The implementing agent sees only the sub-issue description — it has no access to this planning conversation. Write each description so a fresh agent can implement it without further context: exact file paths, function/type names discovered during exploration, the verification commands to run, and the specific patterns to follow.
+- State inter-phase dependencies explicitly in each sub-issue's Dependencies section, by identifier. Phases are implemented sequentially in creation order, so order the sub-issues so every dependency comes before its dependents.
+- Quote concrete acceptance criteria from the original issue verbatim where possible, and distribute every criterion to exactly one phase — no criterion may be left unassigned.
 
 ### 7. Create the New Primary Issue
 
@@ -101,6 +117,7 @@ Create a new Linear issue that serves as the implementation primary issue. Call 
 - `team: "<TEAM_KEY>"`
 - `title: "<ORIGINAL_TITLE>"` (or a refined version that reflects the plan)
 - `description`: the master plan markdown (see template below)
+- `labels: ["<MODEL_OVERRIDE>"]` — only when `MODEL_OVERRIDE` is set. First ensure a label named exactly `<MODEL_OVERRIDE>` (e.g., `opus`, `fable`) exists for the team via `mcp__linear-server__list_issue_labels`, creating it via `mcp__linear-server__create_issue_label` if missing. When `MODEL_OVERRIDE` is unset, apply no routing label so implementation inherits the session model.
 
 Record the new issue's `identifier` (e.g., `APP-124`) and `id` (UUID) as `PRIMARY_IDENTIFIER` and `PRIMARY_ID`.
 
@@ -129,6 +146,7 @@ This issue is the primary implementation issue. Each phase below is tracked as a
 
 To implement all phases, invoke `/linear-workflow:implement-issue <PRIMARY_IDENTIFIER>`.
 To implement a single phase, invoke `/linear-workflow:implement-issue <PHASE_IDENTIFIER>`.
+Workers inherit the model configured in the Claude Code session unless a routing label or a `--model <name>` argument overrides it.
 
 ## Original Issue
 
@@ -154,6 +172,7 @@ Call `mcp__linear-server__save_issue` with:
 - `team: "<TEAM_KEY>"`
 - `parentId: "<PRIMARY_ID>"`
 - `title: "<conventional-commit-prefix>(<scope>): <phase title>"`
+- `labels: ["<MODEL_OVERRIDE>"]` — only when `MODEL_OVERRIDE` is set (label already ensured in step 7); omit otherwise so the phase inherits the session model at implementation time
 - `description`:
 
 ```markdown
@@ -250,6 +269,7 @@ After all issues are created, report a summary:
 - New primary issue identifier, title, and URL
 - Each phase sub-issue identifier, title, and URL
 - Brief note on sequencing rationale
+- Model routing: the `<MODEL_OVERRIDE>` label applied (if any), or a note that implementation will inherit the session-configured model
 - Reminder: use `/linear-workflow:implement-issue <PRIMARY_IDENTIFIER>` to execute the full plan
 
 ## Key Principles
@@ -260,8 +280,9 @@ After all issues are created, report a summary:
 - **New issue, not overwrite**: Create a new primary issue for implementation. The original issue's task was "plan this" — mark it Done.
 - **Related, not child**: Link original → new primary via `relatedTo`, not `parentId`.
 - **Native parent/child**: Sub-issues use Linear's `parentId` under the new primary issue.
-- **Self-contained phases**: Each phase leaves the codebase compiling and tests passing.
+- **Self-contained phases**: Each phase leaves the codebase compiling and tests passing, and each sub-issue description carries everything a fresh agent needs to implement it.
 - **Cleanup phase**: Every plan ends with a cleanup phase.
+- **Session model by default**: Apply a model routing label only when the user passes `--model`. Otherwise leave routing labels off so implementation inherits the model configured for the Claude Code session.
 - **Per-sub-issue base-branch override**: Every sub-issue description starts with `[repo=<REPO_NAME>#main]` so each phase's worktree is branched off `main`, not the parent issue's branch.
 - **Primary plan issue base-branch override**: The primary plan issue's description also starts with `[repo=<REPO_NAME>#main]`. Primary plan issues have no Linear parent at creation time, so the tag is a no-op for routing today — but plan primaries are routinely re-parented under epics or umbrellas, and without the tag they would inherit the parent's branch on the next Cyrus assignment.
 - **Sub-issue dependency graph**: Add `blocks` relationships between consecutive phase sub-issues only; never set phase sub-issues to block the parent issue.

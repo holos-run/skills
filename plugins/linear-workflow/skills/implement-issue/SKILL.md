@@ -1,17 +1,40 @@
 ---
 name: implement-issue
-description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.8.1
+description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Workers and reviewers inherit the session-configured model by default; override with a --model argument or issue routing labels. Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
+version: 2.9.0
 ---
 
 # Implement Issue
 
 Implement a Linear issue end-to-end. This skill self-detects whether the issue is a leaf issue (no children) or a parent issue (has children) and adapts its behavior:
 
-- **Leaf mode**: Branch, implement, open PR, run adversarial code review (label-aware reviewer selection — Sonnet by default, Opus or Codex when explicitly labeled), up to 2 fix rounds, wait for CI, merge, and mark Done.
-- **Parent mode**: Orchestrate implementation of all child issues with label-aware dispatch: Sonnet by default, Opus when explicitly labeled, Codex CLI when explicitly labeled, then track results, sweep for follow-ups, and post a summary.
+- **Leaf mode**: Branch, implement, open PR, run adversarial code review (reviewer inherits the session model by default; `--model` argument or routing labels override), up to 2 fix rounds, wait for CI, merge, and mark Done.
+- **Parent mode**: Orchestrate implementation of all child issues — each worker inherits the session model by default, with `--model` argument or routing labels (`codex`, `fable`, `opus`, `sonnet`, `haiku`) overriding — then track results, sweep for follow-ups, and post a summary.
 
 Implement the Linear issue **{{SKILL_INPUT}}**.
+
+## Arguments and Model Selection
+
+`{{SKILL_INPUT}}` contains the issue reference and optional flags:
+
+```
+<issue> [--model <fable|opus|sonnet|haiku|codex>]
+```
+
+Parse and record:
+
+- The issue reference (identifier or URL) — strip any flags before parsing it in step 1.
+- `MODEL_OVERRIDE` — the value of `--model <name>` (also accepted as `model=<name>`) if present; otherwise unset.
+
+Every point in this skill that chooses a model — sub-issue workers (P7), nested orchestrators (P9), retry dispatches, and code reviewers (L8) — resolves the model with this priority:
+
+1. **`MODEL_OVERRIDE`** — the `--model` argument always wins, over routing labels and project config alike.
+2. **Issue routing label** — lowercase the issue's label names and match `codex`, `fable`, `opus`, `sonnet`, or `haiku`. If multiple are present, prefer `codex` > `fable` > `opus` > `sonnet` > `haiku`.
+3. **Session default** — no override and no routing label: spawn the Claude sub-agent **without a `model` parameter** so it inherits the model configured for the Claude Code session (e.g., Fable or Opus in remote mode). This is the normal path — never hardcode a fallback model.
+
+A resolution of `codex` dispatches via the Codex CLI; any other resolved name is passed verbatim as the `Agent()` `model` parameter. In the `Agent()` templates below, `model: "<RESOLVED_MODEL>"` means: pass the resolved name when priority 1 or 2 produced one, and **omit the `model` parameter entirely** when resolution fell through to the session default.
+
+When this skill re-invokes itself for a sub-issue or nested parent and `MODEL_OVERRIDE` is set, propagate it in the invocation: `/linear-workflow:implement-issue <SUB_IDENTIFIER> --model <name>`. Routing labels need no propagation — each worker reads its own issue's labels.
 
 ## Linear Conventions
 
@@ -34,7 +57,7 @@ When this skill invokes `codex exec`, always pass `--model gpt-5.5` explicitly.
 
 ### 1. Parse Input and Fetch Issue
 
-Parse `{{SKILL_INPUT}}` to extract the Linear issue identifier. Accept either form:
+Parse `{{SKILL_INPUT}}` to extract the Linear issue identifier (after stripping the flags described in "Arguments and Model Selection"). Accept either form:
 
 - Identifier: `APP-123`
 - URL: `https://linear.app/<workspace>/issue/APP-123/<slug>`
@@ -251,15 +274,15 @@ PR_NUMBER=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].nu
 
 **Reviewer selection (in priority order).** Lowercase the issue's `EXISTING_LABELS` (recorded in step 1) before matching:
 
-1. **Issue labeled `codex`** → Codex CLI reviewer.
-2. **Issue labeled `opus`** → Claude sub-agent with `model: "opus"`.
-3. **Issue labeled `sonnet`** → Claude sub-agent with `model: "sonnet"`.
-4. **No routing label, and project's `CLAUDE.md` or `AGENTS.md` contains a `## Code Review` section** with a fenced shell command → use that command.
-5. **No routing label and no project config** → Claude sub-agent on `sonnet`.
+1. **`MODEL_OVERRIDE` is set** → that model: `codex` selects the Codex CLI reviewer; any other name selects a Claude sub-agent with `model: "<MODEL_OVERRIDE>"`.
+2. **Issue labeled `codex`** → Codex CLI reviewer.
+3. **Issue labeled `fable`, `opus`, `sonnet`, or `haiku`** → Claude sub-agent with that label as `model`.
+4. **No override or routing label, and project's `CLAUDE.md` or `AGENTS.md` contains a `## Code Review` section** with a fenced shell command → use that command.
+5. **No override, no routing label, no project config** → Claude sub-agent with **no `model` parameter**, inheriting the session-configured model.
 
-If conflicting routing labels are present, prefer in this order: `codex` > `opus` > `sonnet`. **Routing labels always win over the project's `## Code Review` config.** When a routing label is present, the project config is not consulted — even if both happen to invoke the same backend (e.g., issue labeled `codex` and project config also runs `codex exec`), the routing-label path uses the prompt below, not the project's command.
+If conflicting routing labels are present, prefer in this order: `codex` > `fable` > `opus` > `sonnet` > `haiku`. **The `--model` argument wins over routing labels, and routing labels win over the project's `## Code Review` config.** When an override or routing label is present, the project config is not consulted — even if both happen to invoke the same backend (e.g., issue labeled `codex` and project config also runs `codex exec`), the routing path uses the prompt below, not the project's command.
 
-**Codex reviewer (when issue is labeled `codex`):**
+**Codex reviewer (when the resolution is `codex` — via `--model codex` or the `codex` label):**
 
 Verify the Codex CLI is on `PATH`:
 
@@ -273,7 +296,7 @@ If `codex` is **not** found, do NOT fall back to a Claude sub-agent. Surface an 
 gh pr comment $PR_NUMBER --body "$(cat <<'EOF'
 ## Code Review Cannot Proceed
 
-This issue is labeled `codex`, but the `codex` CLI is not available on PATH in this environment. The reviewer cannot silently downgrade to another model. Marking for human review.
+This issue's review is routed to Codex (via `--model codex` or the `codex` label), but the `codex` CLI is not available on PATH in this environment. The reviewer cannot silently downgrade to another model. Marking for human review.
 EOF
 )"
 gh pr edit $PR_NUMBER --add-label "needs-human-review"
@@ -301,7 +324,7 @@ At the end, state your verdict:
 List each finding with file path, line number, severity, and description."
 ```
 
-**Project-configured reviewer (no routing label, but project config provides a command):**
+**Project-configured reviewer (no `--model` override or routing label, but project config provides a command):**
 
 The project's `CLAUDE.md` or `AGENTS.md` may contain a section headed `## Code Review` with a fenced code block. The command is a template with these variables:
 
@@ -324,14 +347,14 @@ codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
 
 If found, that command is what L9 will run, with variables resolved from the shell.
 
-**Claude sub-agent reviewer (default fallback or explicit `sonnet`/`opus` label):**
+**Claude sub-agent reviewer (session-default fallback, `--model` override, or explicit `fable`/`opus`/`sonnet`/`haiku` label):**
 
-L9 will spawn a Claude sub-agent for review:
+L9 will spawn a Claude sub-agent for review. Pass `model` only when an override or routing label resolved one; omit it on the session-default path so the reviewer inherits the session model:
 
 ```
 Agent(
   description: "Code review PR #$PR_NUMBER",
-  model: "<sonnet | opus>",
+  model: "<RESOLVED_MODEL — omit entirely for the session default>",
   prompt: "You are an adversarial code reviewer. Review the diff of PR #$PR_NUMBER in $REPO.
 
 Run: gh pr diff $PR_NUMBER
@@ -527,7 +550,7 @@ Call `mcp__linear-server__save_comment` with `issue: "<ISSUE_IDENTIFIER>"` and b
 
 ## Parent Mode
 
-Orchestrator for a parent issue with children. Uses label-aware dispatch to route each child issue to either a Claude Code sub-agent or the Codex CLI.
+Orchestrator for a parent issue with children. Routes each child issue to a Claude Code sub-agent (inheriting the session model unless overridden) or the Codex CLI, per the "Arguments and Model Selection" resolution rules.
 
 ### P1. Patch Missing Base-Branch Override on the Primary Issue
 
@@ -759,22 +782,18 @@ If partial work exists (`SUB_BRANCH` or `SUB_OPEN_PR` is non-empty):
    Discarding partial work from a previous attempt. Starting a clean implementation.
    ```
 
-**Dispatch selection per sub-issue:**
+**Dispatch selection per sub-issue** — apply the "Arguments and Model Selection" resolution:
 
-- Lowercase the child label names before matching.
-- If the child has a `codex` label, use the **Codex CLI** instead of `Agent()`.
-- Else if the child has an `opus` label, spawn a Claude sub-agent with model `opus`.
-- Else if the child has a `sonnet` label, spawn a Claude sub-agent with model `sonnet`.
-- Else default to **Sonnet**.
+- If `MODEL_OVERRIDE` is set, it wins for every child: `codex` routes to the **Codex CLI**; any other name routes to a Claude sub-agent with that `model`.
+- Else lowercase the child's label names and match routing labels: `codex` → Codex CLI; `fable`/`opus`/`sonnet`/`haiku` → Claude sub-agent with that `model`. Conflicts prefer `codex` > `fable` > `opus` > `sonnet` > `haiku`.
+- Else (no override, no routing label) spawn a Claude sub-agent with **no `model` parameter** so the worker inherits the session-configured model.
 
-If conflicting routing labels are present (`codex`, `opus`, `sonnet`), prefer the most explicit non-Claude path first: `codex` > `opus` > `sonnet`.
-
-If routing selects Claude, spawn a sub-agent:
+If routing selects Claude, spawn a sub-agent. Append ` --model <MODEL_OVERRIDE>` to the skill invocation only when `MODEL_OVERRIDE` is set:
 
 ```
 Agent(
   description: "Implement <SUB_IDENTIFIER>",
-  model: "<sonnet | opus>",
+  model: "<RESOLVED_MODEL — omit entirely for the session default>",
   prompt: "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER> to implement this sub-issue
   end-to-end. The skill handles branching, implementation, code review, CI, merge, and issue
   transitions. Run to completion. Return a short summary: result (MERGED |
@@ -801,15 +820,15 @@ Usage limits apply when a runner's output indicates capacity is exhausted — fo
 **If Codex hits a usage limit:**
 
 1. Do not increment the retry counter.
-2. Switch the runner for this sub-issue to **Opus** and dispatch a Claude sub-agent with `model: "opus"` using the same sub-issue identifier and prompt.
+2. Switch the runner for this sub-issue to Claude and dispatch a sub-agent with **no `model` parameter** (inheriting the session model), using the same sub-issue identifier and prompt.
 
-**If Opus hits a usage limit (either as the primary route or as a Codex fallback):**
+**If a Claude runner hits a usage limit (any model — session default, override, or label-routed):**
 
 1. Do not increment the retry counter.
 2. Parse the earliest "retry after" time from all usage-limit messages (e.g., "available again at HH:MM UTC", "retry in N minutes", "resets at HH:MM"). Convert to seconds until that time.
 3. If no retry time is parseable, default to 15 minutes (`900` seconds).
 4. Wait (`sleep <seconds_until_retry>`) — do not prompt the user.
-5. Re-dispatch the sub-issue using its original routing label selection (Codex if labeled `codex`, otherwise Opus, otherwise Sonnet).
+5. Re-dispatch the sub-issue using its original model resolution (`MODEL_OVERRIDE` if set, else routing label, else session default).
 
 Never prompt the user for guidance on usage limits — resolve autonomously.
 
@@ -829,13 +848,13 @@ Use a retry loop with up to **3 total attempts** per sub-issue:
    ```bash
    git fetch origin
    ```
-4. Re-check the sub-issue's labels, then dispatch a replacement worker with the same sub-issue identifier plus a warning. Do not describe implementation steps — just provide context and let the skill decide what to do.
+4. Re-resolve the sub-issue's model (re-check labels; `MODEL_OVERRIDE` still wins), then dispatch a replacement worker with the same sub-issue identifier plus a warning. Do not describe implementation steps — just provide context and let the skill decide what to do.
 
-   If the route is Claude:
+   If the route is Claude (omit `model` for the session default, as always):
    ```
    Agent(
      description: "Implement <SUB_IDENTIFIER> (retry <N>)",
-     model: "<sonnet | opus>",
+     model: "<RESOLVED_MODEL — omit entirely for the session default>",
      prompt: "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER>.
 
      Warning: A previous attempt did not complete. Point: <e.g. 'wrote files but did not commit'>. Reason: <e.g. 'worker returned without a result summary'>.
@@ -898,9 +917,9 @@ Process follow-ups with the **full P7 pre-dispatch sequence** — including the 
 
 ### P9. Nested Parent Issues
 
-If a sub-issue or follow-up is itself a parent (has its own children), the dispatched worker invoked in P7 will simply re-enter this skill in Parent Mode and orchestrate its own children with the same label-routing rules — including the full P7 pre-dispatch sequence (override patch + partial-work cleanup) for each grand-child. Nested orchestration composes naturally — no special handling is needed for depth beyond re-checking labels at each parent.
+If a sub-issue or follow-up is itself a parent (has its own children), the dispatched worker invoked in P7 will simply re-enter this skill in Parent Mode and orchestrate its own children with the same model-resolution rules — including the full P7 pre-dispatch sequence (override patch + partial-work cleanup) for each grand-child. Nested orchestration composes naturally — no special handling is needed for depth beyond re-resolving the model at each parent.
 
-By default, nested parent orchestrators should also run on **Sonnet**. Use **Opus** only when the nested parent issue is explicitly labeled `opus`; use **Codex CLI** when it is explicitly labeled `codex`.
+Nested parent orchestrators follow the same resolution: `MODEL_OVERRIDE` (propagated via `--model`) first, then the nested parent issue's own routing label (`codex` → Codex CLI; `fable`/`opus`/`sonnet`/`haiku` → that Claude model), otherwise inherit the session-configured model.
 
 ### P10. Post Summary
 
@@ -977,7 +996,7 @@ Leave the parent in its current state. Add `needs-human-review` alongside `imple
 - **GitHub CLI**: `gh` authenticated with repo access
 - **Git**: Clean working directory
 - **Code review tool**: Configured in project's CLAUDE.md (optional — falls back to Claude sub-agent)
-- **Codex CLI**: Required for issues labeled `codex` (used for both implementation dispatch in Parent Mode and reviewer selection in Leaf Mode)
+- **Codex CLI**: Required when the model resolution selects `codex` — via `--model codex` or a `codex` label (used for both implementation dispatch in Parent Mode and reviewer selection in Leaf Mode)
 
 ## Linear API Cheat Sheet
 
