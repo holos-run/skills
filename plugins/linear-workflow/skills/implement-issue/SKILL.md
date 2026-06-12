@@ -1,14 +1,14 @@
 ---
 name: implement-issue
-description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Workers and reviewers inherit the session-configured model by default; override with a --model argument or issue routing labels. Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.10.0
+description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Workers inherit the session-configured model by default; override with a --model argument or issue routing labels. Code review defaults to Codex and posts its findings back to the PR; override the reviewer with --reviewer. Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
+version: 2.11.0
 ---
 
 # Implement Issue
 
 Implement a Linear issue end-to-end. This skill self-detects whether the issue is a leaf issue (no children) or a parent issue (has children) and adapts its behavior:
 
-- **Leaf mode**: Branch, implement, open PR, run adversarial code review (reviewer inherits the session model by default; `--model` argument or routing labels override), up to 2 fix rounds, wait for CI, merge, and mark Done.
+- **Leaf mode**: Branch, implement, open PR, run adversarial code review (Codex by default; `--reviewer` argument, `--model` argument, or routing labels override), post the review back to the PR as a comment, up to 2 fix rounds, wait for CI, merge, and mark Done.
 - **Parent mode**: Orchestrate implementation of all child issues — each worker inherits the session model by default, with `--model` argument or routing labels (`codex`, `fable`, `opus`, `sonnet`, `haiku`) overriding — then track results, sweep for follow-ups, and post a summary.
 
 Implement the Linear issue **{{SKILL_INPUT}}**.
@@ -18,15 +18,16 @@ Implement the Linear issue **{{SKILL_INPUT}}**.
 `{{SKILL_INPUT}}` contains the issue reference and optional flags:
 
 ```
-<issue> [--model <fable|opus|sonnet|haiku|codex>]
+<issue> [--model <fable|opus|sonnet|haiku|codex>] [--reviewer <codex|claude|fable|opus|sonnet|haiku>]
 ```
 
 Parse and record:
 
 - The issue reference (identifier or URL) — strip any flags before parsing it in step 1.
 - `MODEL_OVERRIDE` — the value of `--model <name>` (also accepted as `model=<name>`) if present; otherwise unset.
+- `REVIEWER_OVERRIDE` — the value of `--reviewer <name>` (also accepted as `reviewer=<name>`) if present; otherwise unset. Controls **only** the code reviewer selection in L8 — it never affects worker or orchestrator dispatch. `codex` selects the Codex reviewer; `claude` selects a Claude sub-agent inheriting the session model; `fable`/`opus`/`sonnet`/`haiku` select a Claude sub-agent pinned to that model.
 
-Every point in this skill that chooses a model — sub-issue workers (P6), nested orchestrators (P8), retry dispatches, and code reviewers (L8) — resolves the model with this priority:
+Every point in this skill that dispatches **implementation work** — sub-issue workers (P6), nested orchestrators (P8), and retry dispatches — resolves the model with this priority (code reviewers follow their own resolution in L8, which adds `REVIEWER_OVERRIDE` on top and defaults to Codex instead of the session model):
 
 1. **`MODEL_OVERRIDE`** — the `--model` argument always wins, over routing labels and project config alike.
 2. **Issue routing label** — lowercase the issue's label names and match `codex`, `fable`, `opus`, `sonnet`, or `haiku`. If multiple are present, prefer `codex` > `fable` > `opus` > `sonnet` > `haiku`.
@@ -34,7 +35,7 @@ Every point in this skill that chooses a model — sub-issue workers (P6), neste
 
 A resolution of `codex` dispatches via the Codex CLI; any other resolved name is passed verbatim as the `Agent()` `model` parameter. In the `Agent()` templates below, `model: "<RESOLVED_MODEL>"` means: pass the resolved name when priority 1 or 2 produced one, and **omit the `model` parameter entirely** when resolution fell through to the session default.
 
-When this skill re-invokes itself for a sub-issue or nested parent and `MODEL_OVERRIDE` is set, propagate it in the invocation: `/linear-workflow:implement-issue <SUB_IDENTIFIER> --model <name>`. Routing labels need no propagation — each worker reads its own issue's labels.
+When this skill re-invokes itself for a sub-issue or nested parent, propagate `MODEL_OVERRIDE` and `REVIEWER_OVERRIDE` in the invocation when set: `/linear-workflow:implement-issue <SUB_IDENTIFIER> --model <name> --reviewer <name>` (include each flag only when its override is set). Routing labels need no propagation — each worker reads its own issue's labels.
 
 ## Linear Conventions
 
@@ -258,41 +259,34 @@ PR_NUMBER=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].nu
 
 **Reviewer selection (in priority order).** Lowercase the issue's `EXISTING_LABELS` (recorded in step 1) before matching:
 
-1. **`MODEL_OVERRIDE` is set** → that model: `codex` selects the Codex CLI reviewer; any other name selects a Claude sub-agent with `model: "<MODEL_OVERRIDE>"`.
-2. **Issue labeled `codex`** → Codex CLI reviewer.
-3. **Issue labeled `fable`, `opus`, `sonnet`, or `haiku`** → Claude sub-agent with that label as `model`.
-4. **No override or routing label, and project's `CLAUDE.md` or `AGENTS.md` contains a `## Code Review` section** with a fenced shell command → use that command.
-5. **No override, no routing label, no project config** → Claude sub-agent with **no `model` parameter**, inheriting the session-configured model.
+1. **`REVIEWER_OVERRIDE` is set** → that reviewer: `codex` selects the Codex reviewer; `claude` selects a Claude sub-agent with **no `model` parameter** (session-configured model); `fable`/`opus`/`sonnet`/`haiku` selects a Claude sub-agent with `model: "<REVIEWER_OVERRIDE>"`.
+2. **`MODEL_OVERRIDE` is set** → that model: `codex` selects the Codex reviewer; any other name selects a Claude sub-agent with `model: "<MODEL_OVERRIDE>"`.
+3. **Issue labeled `codex`** → Codex reviewer.
+4. **Issue labeled `fable`, `opus`, `sonnet`, or `haiku`** → Claude sub-agent with that label as `model`.
+5. **No override or routing label, and project's `CLAUDE.md` or `AGENTS.md` contains a `## Code Review` section** with a fenced shell command → use that command.
+6. **Default: Codex reviewer.** No override, no routing label, no project config → the Codex reviewer. This is the default code reviewer for this skill.
 
-If conflicting routing labels are present, prefer in this order: `codex` > `fable` > `opus` > `sonnet` > `haiku`. **The `--model` argument wins over routing labels, and routing labels win over the project's `## Code Review` config.** When an override or routing label is present, the project config is not consulted — even if both happen to invoke the same backend (e.g., issue labeled `codex` and project config also runs `codex exec`), the routing path uses the prompt below, not the project's command.
+If conflicting routing labels are present, prefer in this order: `codex` > `fable` > `opus` > `sonnet` > `haiku`. **The `--reviewer` argument wins over `--model`, `--model` wins over routing labels, and routing labels win over the project's `## Code Review` config.** When an override or routing label is present, the project config is not consulted — even if both happen to invoke the same backend (e.g., issue labeled `codex` and project config also runs `codex exec`), the routing path uses the prompt below, not the project's command.
 
-**Codex reviewer (when the resolution is `codex` — via `--model codex` or the `codex` label):**
-
-Verify the Codex CLI is on `PATH`:
-
-```bash
-command -v codex >/dev/null
-```
-
-If `codex` is **not** found, do NOT fall back to a Claude sub-agent. Surface an explicit error and escalate now (do not proceed to L9–L11):
+**Posting the review back to the PR (all reviewer paths).** Every review round must end with the reviewer's findings posted as a comment on the PR. For the Codex CLI, Codex MCP, project-configured, and Claude sub-agent paths, after parsing the output post it:
 
 ```bash
-gh pr comment $PR_NUMBER --body "$(cat <<'EOF'
-## Code Review Cannot Proceed
+gh pr comment $PR_NUMBER --body "$(cat <<EOF
+## Code Review — Round <N> (<reviewer: codex | claude | model name | project-configured>)
 
-This issue's review is routed to Codex (via `--model codex` or the `codex` label), but the `codex` CLI is not available on PATH in this environment. The reviewer cannot silently downgrade to another model. Marking for human review.
+<the reviewer's full findings and verdict, verbatim>
 EOF
 )"
-gh pr edit $PR_NUMBER --add-label "needs-human-review"
 ```
 
-Then call `mcp__linear-server__save_issue` with `issue: "<ISSUE_IDENTIFIER>"` and `labels: ["needs-human-review", ...existing]`. Skip directly to step L16 with result `ESCALATED`.
+The Codex cloud path (`@codex review`, method 3 below) posts its review on the PR natively — do not duplicate it with a second comment.
 
-If `codex` is available, the command L9 will run is:
+**Codex reviewer (the default, or selected via `--reviewer codex`, `--model codex`, or the `codex` label):**
 
-```bash
-codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
-  "You are an adversarial code reviewer. Review the diff of PR #$PR_NUMBER in $REPO.
+The review prompt for all Codex invocation methods is:
+
+```
+You are an adversarial code reviewer. Review the diff of PR #$PR_NUMBER in $REPO.
 
 Run: gh pr diff $PR_NUMBER
 
@@ -305,10 +299,51 @@ At the end, state your verdict:
 - APPROVE — if no critical or important findings
 - REQUEST_CHANGES — if any critical or important findings exist
 
-List each finding with file path, line number, severity, and description."
+List each finding with file path, line number, severity, and description.
 ```
 
-**Project-configured reviewer (no `--model` override or routing label, but project config provides a command):**
+Be smart about how Codex is invoked: probe the following methods **in order** and use the first one that is available. Record the chosen method once in L8 and reuse it for every round in L9–L11.
+
+**Method 1 — Codex CLI (preferred).** Check availability:
+
+```bash
+command -v codex >/dev/null
+```
+
+If found, the command L9 will run is:
+
+```bash
+codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
+  "<the review prompt above, with $PR_NUMBER and $REPO expanded>"
+```
+
+**Method 2 — Codex MCP server.** If the CLI is not on `PATH`, check whether a Codex MCP server is connected to this session: use `ToolSearch` with query `+codex` and look for tools such as `mcp__codex__codex` (the Codex MCP server exposes a `codex` tool that starts a conversation; `codex mcp-server` is the upstream server). If present, L9 invokes that tool with the review prompt as the `prompt` argument and parses the returned conversation text exactly like CLI output.
+
+**Method 3 — Codex cloud via GitHub (`@codex review`).** If neither the CLI nor an MCP server is available, check whether the OpenAI Codex GitHub integration is installed on the repo — the practical probe is to post the trigger comment and watch for a response:
+
+```bash
+gh pr comment $PR_NUMBER --body "@codex review"
+```
+
+Then poll for Codex's review: every 60 seconds (`sleep 60`), list new reviews and comments since the trigger via `gh pr view $PR_NUMBER --json reviews,comments` and look for a response authored by the Codex bot (author login containing `codex`, e.g. `chatgpt-codex-connector`). Parse its findings and verdict like CLI output (treat an explicit approval or absence of critical/important findings as APPROVE). Time out after 15 minutes; a timeout means this method is unavailable. Codex posts its review on the PR itself, satisfying the post-back requirement for this method.
+
+**If all three methods fail and Codex was explicitly requested** (via `--reviewer codex`, `--model codex`, or the `codex` label): do NOT fall back to a Claude sub-agent. Surface an explicit error and escalate now (do not proceed to L9–L11):
+
+```bash
+gh pr comment $PR_NUMBER --body "$(cat <<'EOF'
+## Code Review Cannot Proceed
+
+This issue's review is routed to Codex (via `--reviewer codex`, `--model codex`, or the `codex` label), but no Codex invocation method is available in this environment: the `codex` CLI is not on PATH, no Codex MCP server is connected, and the Codex GitHub integration did not respond. The reviewer cannot silently downgrade to another model. Marking for human review.
+EOF
+)"
+gh pr edit $PR_NUMBER --add-label "needs-human-review"
+```
+
+Then call `mcp__linear-server__save_issue` with `issue: "<ISSUE_IDENTIFIER>"` and `labels: ["needs-human-review", ...existing]`. Skip directly to step L16 with result `ESCALATED`.
+
+**If all three methods fail and Codex was merely the default** (priority 6 — nothing explicitly routed to it): fall back to a Claude sub-agent reviewer with **no `model` parameter** (session-configured model), and note the substitution in the review's PR comment: `Codex was unavailable (no CLI, MCP server, or GitHub integration); reviewed by Claude (session model) instead.`
+
+**Project-configured reviewer (no `--reviewer`/`--model` override or routing label, but project config provides a command):**
 
 The project's `CLAUDE.md` or `AGENTS.md` may contain a section headed `## Code Review` with a fenced code block. The command is a template with these variables:
 
@@ -331,9 +366,9 @@ codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
 
 If found, that command is what L9 will run, with variables resolved from the shell.
 
-**Claude sub-agent reviewer (session-default fallback, `--model` override, or explicit `fable`/`opus`/`sonnet`/`haiku` label):**
+**Claude sub-agent reviewer (`--reviewer claude`, a `--reviewer`/`--model` override naming a Claude model, an explicit `fable`/`opus`/`sonnet`/`haiku` label, or the Codex-unavailable default fallback):**
 
-L9 will spawn a Claude sub-agent for review. Pass `model` only when an override or routing label resolved one; omit it on the session-default path so the reviewer inherits the session model:
+L9 will spawn a Claude sub-agent for review. Pass `model` only when an override or routing label resolved one; omit it for `--reviewer claude` and the fallback path so the reviewer inherits the session model:
 
 ```
 Agent(
@@ -362,6 +397,8 @@ Run the review command (or fallback agent). Parse the output for:
 
 - **Verdict**: APPROVE or REQUEST_CHANGES
 - **Finding counts** by severity: CRITICAL, IMPORTANT, STYLE
+
+Post the review back to the PR as a comment per the "Posting the review back to the PR" requirement in L8 (skip for the `@codex review` cloud method, which posts natively). This applies to every round — L9, L10, and L11.
 
 **If APPROVE (no findings):** Skip to step L12.
 
@@ -934,8 +971,8 @@ Leave the parent in its current state. Add `needs-human-review` alongside `imple
 - **Linear MCP**: `mcp__linear-server__*` tools configured
 - **GitHub CLI**: `gh` authenticated with repo access
 - **Git**: Clean working directory
-- **Code review tool**: Configured in project's CLAUDE.md (optional — falls back to Claude sub-agent)
-- **Codex CLI**: Required when the model resolution selects `codex` — via `--model codex` or a `codex` label (used for both implementation dispatch in Parent Mode and reviewer selection in Leaf Mode)
+- **Code review tool**: Codex is the default reviewer; override with `--reviewer`, `--model`, routing labels, or a `## Code Review` section in the project's CLAUDE.md/AGENTS.md
+- **Codex access**: One of the Codex CLI, a connected Codex MCP server, or the Codex GitHub integration. Required when routing explicitly selects `codex` (via `--reviewer codex`, `--model codex`, or a `codex` label); when Codex is merely the default reviewer and none are available, review falls back to a Claude sub-agent on the session model. The CLI is the only method usable for implementation dispatch in Parent Mode.
 
 ## Linear API Cheat Sheet
 
