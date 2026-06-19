@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Workers inherit the session-configured model by default; override with a --model argument or issue routing labels. Code review defaults to Codex and posts its findings back to the PR; override the reviewer with --reviewer. Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.11.0
+version: 2.13.1
 ---
 
 # Implement Issue
@@ -60,6 +60,8 @@ When this skill invokes `codex exec`, always pass `--model gpt-5.5` explicitly.
 - Codex CLI 5.3: `gpt-4.1`
 - Codex CLI 5.4: `o4-mini` (alias: `gpt-4.1-mini`)
 - Codex CLI 5.5: `gpt-5.5` (current default for this skill)
+
+**Always run `codex exec` in the foreground and let the Bash call return — it returns exactly when Codex exits.** Never background it (no `run_in_background`, `&`, or `disown`) and never poll `ps`/`pgrep`/`jobs`/`/proc` to detect completion: process-table greps match the agent's own shell or the `grep` itself and deadlock the session until the harness force-recovers it. Bound long calls with `timeout`. The L8 Codex CLI reviewer (Method 1) applies this in full detail.
 
 ---
 
@@ -310,12 +312,31 @@ Be smart about how Codex is invoked: probe the following methods **in order** an
 command -v codex >/dev/null
 ```
 
-If found, the command L9 will run is:
+If found, each round in L9–L11 runs Codex as **one foreground, bounded Bash call** whose review is captured to a file. Three rules make this reliable — they exist because the dominant failure mode is backgrounding Codex and then trying to detect completion by grepping the process table for its PID, which matches the agent's own shell (or the `grep`/`pgrep` itself) and deadlocks the session until the harness force-recovers it:
+
+1. **Never background it.** Run `codex exec` as a single foreground Bash call and let the call return — the return *is* the completion signal. Do not set `run_in_background`, do not append `&`, do not `disown`.
+2. **Never poll for completion.** Do not run `ps`, `pgrep`, `jobs`, `wait`, or read `/proc` to find Codex. `--output-last-message` writes the review to the output file atomically when Codex exits; there is nothing to poll.
+3. **Bound it.** Wrap the call in `timeout 600` and set the Bash tool's own timeout to its `600000` ms maximum. A round that needs longer than 10 minutes is treated as inconclusive (below), never waited on indefinitely.
+
+The command L9 runs each round (feed the diff on stdin so Codex spends no turns re-fetching it):
 
 ```bash
-codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
-  "<the review prompt above, with $PR_NUMBER and $REPO expanded>"
+REVIEW_OUT=$(mktemp)
+gh pr diff "$PR_NUMBER" > "$REVIEW_OUT.diff"
+timeout 600 codex exec \
+  --model gpt-5.5 \
+  --dangerously-bypass-approvals-and-sandbox \
+  --skip-git-repo-check \
+  --output-last-message "$REVIEW_OUT" \
+  "<the review prompt above, with $PR_NUMBER and $REPO expanded; the diff is also supplied on stdin>" \
+  < "$REVIEW_OUT.diff"
+CODEX_STATUS=$?
 ```
+
+Interpret the result deterministically — never re-run merely to "check if it finished":
+
+- **`CODEX_STATUS` is 0 and `$REVIEW_OUT` is non-empty:** that file is the round's review. Parse it for the verdict and per-severity findings and post it to the PR.
+- **`CODEX_STATUS` is 124** (the `timeout` fired) **or `$REVIEW_OUT` is empty:** the round is inconclusive. Re-run this exact command **once**. If the rerun is also inconclusive, fall through to Method 2.
 
 **Method 2 — Codex MCP server.** If the CLI is not on `PATH`, check whether a Codex MCP server is connected to this session: use `ToolSearch` with query `+codex` and look for tools such as `mcp__codex__codex` (the Codex MCP server exposes a `codex` tool that starts a conversation; `codex mcp-server` is the upstream server). If present, L9 invokes that tool with the review prompt as the `prompt` argument and parses the returned conversation text exactly like CLI output.
 
@@ -438,7 +459,7 @@ Run the review command one final time. Parse the output.
    gh pr comment $PR_NUMBER --body "$(cat <<'EOF'
 ## Unresolved Critical/Important Findings
 
-After 2 review rounds, the following findings remain unresolved:
+After 3 review rounds, the following findings remain unresolved:
 
 <list each finding with file, line, and description>
 
