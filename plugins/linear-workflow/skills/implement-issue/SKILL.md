@@ -463,7 +463,7 @@ rm -f "$REVIEW_DIR"/pr.diff "$REVIEW_DIR"/gh-diff.err \
 gh pr diff "$PR_NUMBER" > "$REVIEW_DIR/pr.diff" 2> "$REVIEW_DIR/gh-diff.err"
 GH_DIFF_STATUS=$?
 if [ "$GH_DIFF_STATUS" -ne 0 ] || [ ! -s "$REVIEW_DIR/pr.diff" ]; then
-  CLAUDE_STATUS=1
+  CLAUDE_STATUS=not-run
 else
   timeout --kill-after=15 570 claude --print \
     --model "$CLAUDE_REVIEW_MODEL" \
@@ -476,16 +476,17 @@ jq -er 'select((.type == "result") and (.is_error == false))
         | .result | select(type == "string")' \
   "$REVIEW_DIR/review.json" > "$REVIEW_DIR/review.txt" 2> "$REVIEW_DIR/review-jq.err"
 EXTRACT_STATUS=$?
-VERDICT=$(grep -E '^[[:space:]*_]*Verdict:[[:space:]*_]*(APPROVE|REQUEST_CHANGES)[[:space:]*_]*$' \
-  "$REVIEW_DIR/review.txt" | tail -1 | grep -oE 'APPROVE|REQUEST_CHANGES')
+VERDICT=$(awk 'NF {line=$0} END {print line}' "$REVIEW_DIR/review.txt" \
+  | grep -E '^[[:space:]*_]*Verdict:[[:space:]*_]*(APPROVE|REQUEST_CHANGES)[[:space:]*_]*$' \
+  | grep -oE 'APPROVE|REQUEST_CHANGES')
 ```
 
 Interpret the result deterministically — never re-run merely to "check if it finished". A round is **conclusive** only when ALL of the following hold; a partial `gh` diff, a truncated JSON stream rescued by `jq`, or review text with no verdict must never pass as a completed review:
 
-- `GH_DIFF_STATUS` is 0 and `$REVIEW_DIR/pr.diff` is non-empty (a diff failure is a `gh` failure — record it as such, not as a Claude failure);
+- `GH_DIFF_STATUS` is 0 and `$REVIEW_DIR/pr.diff` is non-empty (a diff failure is a `gh` failure — `CLAUDE_STATUS` reads `not-run` so the evidence names the failing component, never Claude);
 - `CLAUDE_STATUS` is 0;
 - `EXTRACT_STATUS` is 0 and `$REVIEW_DIR/review.txt` is non-empty;
-- `VERDICT` is non-empty. The verdict comes only from a dedicated `Verdict:` line, which the review prompt demands as the final line (the extraction tolerates surrounding Markdown emphasis, and the last such line wins). Prose that merely mentions a verdict token, an echoed rubric, a refusal, or a token embedded in another word (`DISAPPROVE`) can never pass.
+- `VERDICT` is non-empty. The verdict comes only from the review's **final nonblank line**, which the prompt demands be a dedicated `Verdict:` line (the extraction tolerates surrounding Markdown emphasis). Prose that merely mentions a verdict token, an echoed rubric, a refusal with an earlier standalone verdict, or a token embedded in another word (`DISAPPROVE`) can never pass.
 
 **Conclusive:** `$REVIEW_DIR/review.txt` is the round's review with verdict `$VERDICT`. Parse the per-severity findings and post it to the PR. **Anything else — the round is inconclusive.** Before retrying, record the attempt's evidence: `GH_DIFF_STATUS`, `CLAUDE_STATUS` (124 means `timeout` killed the call), `EXTRACT_STATUS`, the tails of `review.err`, `gh-diff.err`, and `review-jq.err`, and the envelope's `subtype`/`is_error` from `review.json` if it parsed. Then rerun the exact foreground command once. If the rerun is also inconclusive, do not invoke Codex or inherit the session model. Post the `Code Review Cannot Proceed` comment below, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`.
 
