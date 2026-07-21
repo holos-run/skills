@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Workers inherit the session-configured model by default; override with a --model argument or issue routing labels. Code review uses the opposite model family from the primary implementation runtime (the latest Claude Opus reviews Codex; the Codex frontier model reviews Claude) and posts findings back to the PR; override the reviewer with --reviewer. Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.14.0
+version: 2.15.0
 ---
 
 # Implement Issue
@@ -88,7 +88,7 @@ Each leaf worker detects its own runtime. Parent orchestrators do not force thei
 
 ## Claude Review Model Mapping
 
-When a Codex implementation is reviewed by Claude, always invoke Claude Code with `--model opus`. Claude Code defines `opus` as the alias for the latest available Claude Opus model. Do not pin a version-specific Opus model, inherit the parent session model, or use a lower-cost fallback. Run the Claude CLI in the foreground, bound it with `timeout`, and capture its final text before continuing.
+When a Codex implementation is reviewed by Claude, always invoke Claude Code with `--model opus`. Claude Code defines `opus` as the alias for the latest available Claude Opus model. Do not pin a version-specific Opus model, inherit the parent session model, or use a lower-cost fallback. Run the Claude CLI in the foreground, bound it with `timeout`, and capture its final text before continuing. Invoke it with `--print --output-format json` so success is machine-checkable from the result envelope, capture stderr to a file, and prove the CLI end-to-end with a cheap probe before the first review round. The L8 Claude reviewer applies this in full detail.
 
 ---
 
@@ -321,9 +321,7 @@ Examine every changed file. Report findings using these severity levels:
 - [IMPORTANT] — error handling gaps, race conditions, missing validation, test gaps
 - [STYLE] — naming, formatting, dead code, minor improvements
 
-At the end, state your verdict:
-- APPROVE — if no critical or important findings
-- REQUEST_CHANGES — if any critical or important findings exist
+End your review with a final line containing exactly `Verdict: APPROVE` (no critical or important findings) or `Verdict: REQUEST_CHANGES` (any critical or important findings exist). A review without this final verdict line is treated as inconclusive.
 
 List each finding with file path, line number, severity, and description.
 ```
@@ -428,35 +426,90 @@ If found, that command is what L9 will run, with variables resolved from the she
 
 Resolve `CLAUDE_REVIEW_MODEL`: `claude` and `opus` both resolve to the moving `opus` alias; the other explicit reviewer values retain their names. For the automatic Codex-runtime route, it is always `opus`, ensuring each run uses the latest available Claude Opus model.
 
-Check availability:
+**Probe the CLI end-to-end before the first round.** `command -v claude` alone is not sufficient: the binary can be present yet unable to serve the review model — not authenticated, no access to the resolved model, or no network from the invoking sandbox. In every one of those cases `claude --print` exits with empty stdout and the explanation only on stderr, which is exactly the undiagnosable "completed without producing review output" failure this probe exists to prevent. Run:
 
 ```bash
 command -v claude >/dev/null
+command -v jq >/dev/null
+REVIEW_DIR=$(mktemp -d)
+if [ -z "$REVIEW_DIR" ] || [ ! -d "$REVIEW_DIR" ]; then
+  echo "mktemp -d failed: cannot stage reviewer artifacts" >&2
+  exit 1
+fi
+timeout --kill-after=15 120 claude --print \
+  --model "$CLAUDE_REVIEW_MODEL" \
+  --output-format json \
+  "Reply with exactly the word OK" \
+  </dev/null >"$REVIEW_DIR/probe.json" 2>"$REVIEW_DIR/probe.err"
+PROBE_STATUS=$?
+jq -e '(.type == "result") and (.is_error == false)
+       and ((.result | type) == "string") and ((.result | length) > 0)' \
+  "$REVIEW_DIR/probe.json" >/dev/null 2>"$REVIEW_DIR/probe-jq.err"
+PROBE_PARSE=$?
 ```
 
-If `claude` is not found, post a `Code Review Cannot Proceed` comment naming the required model, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`. Do not invoke Codex or inherit the current session model.
+`mktemp -d` creates `REVIEW_DIR` with mode 700; every reviewer artifact (diff, envelopes, stderr) lives inside it — never in ad-hoc sibling paths — and the whole directory is removed with `rm -rf "$REVIEW_DIR"` when review concludes or escalates, because it holds the full PR diff and CLI diagnostics. The `if` guard exits before any child path exists: when `mktemp` fails or returns empty, the shell call ends there — treat that nonzero exit as a probe failure and escalate. Never construct child paths from an unverified `REVIEW_DIR`, because an empty prefix turns them into root-level paths like `/pr.diff`. Run the probe with the host shell tool's deadline strictly above its 135 s worst case (120 s inner bound + 15 s kill grace) — e.g., 180000 ms for Claude Code's Bash tool, whose default deadline is shorter. The jq filter requires `.is_error == false` literally (a missing field must fail, so `| not` is not acceptable) and a non-empty string `result`.
 
-If found, each round runs Claude Code as one foreground, bounded call. Claude Code `--print` accepts a prompt argument and appends piped stdin to that prompt; supply the diff on stdin and capture stdout:
+The probe succeeds only when `PROBE_STATUS` and `PROBE_PARSE` are both 0. If `claude` or `jq` is missing, or the probe fails, the Claude reviewer is unavailable: post a `Code Review Cannot Proceed` comment (template below) that names the required model **and includes the probe evidence** — `PROBE_STATUS` and `PROBE_PARSE` plus the tails of `probe.err` and `probe-jq.err`, or the JSON envelope's `subtype`/`result` when the error surfaced there — then add `needs-human-review` to the PR and Linear issue and skip to L16 with result `ESCALATED`. Do not invoke Codex or inherit the current session model, and do not spend review rounds discovering a statically broken CLI.
+
+If the probe succeeds, each round in L9–L11 runs Claude Code as **one foreground, bounded call**, under the same three rules as the Codex CLI reviewer: never background it, never poll for completion, and bound every network-dependent command with `timeout --kill-after=<grace> <seconds>` so a process that ignores `SIGTERM` still dies from `SIGKILL`. The host shell tool's own deadline must be **strictly longer** than the attempt's combined worst case — the bounded diff fetch plus the bounded Claude call plus their kill graces (extraction is local and negligible) — so every `timeout` exit status is observed before any host-side kill. With Claude Code's 600000 ms Bash tool maximum that means `timeout --kill-after=10 60` for the diff fetch and `timeout --kill-after=15 490` for the Claude call (≤ 575 s combined worst case); a Codex host that allows longer foreground calls may raise the Claude bound, keeping the combined worst case strictly below the host deadline.
+
+Claude Code `--print` accepts a prompt argument and appends piped stdin to that prompt; supply the diff on stdin. Use `--output-format json`, not `text`: the JSON envelope makes success machine-checkable (`type`, `is_error`, non-empty `result`) where an empty text stream is ambiguous, and capturing stderr separately means every failure leaves diagnosable evidence. Each attempt starts from a clean slate so a failed attempt can never surface a previous attempt's files:
 
 ```bash
-REVIEW_OUT=$(mktemp)
-gh pr diff "$PR_NUMBER" > "$REVIEW_OUT.diff"
-if [ ! -s "$REVIEW_OUT.diff" ]; then
-  CLAUDE_STATUS=1
+rm -f "$REVIEW_DIR"/pr.diff "$REVIEW_DIR"/gh-diff.err \
+      "$REVIEW_DIR"/review.json "$REVIEW_DIR"/review.err \
+      "$REVIEW_DIR"/review.txt "$REVIEW_DIR"/review-jq.err
+timeout --kill-after=10 60 gh pr diff "$PR_NUMBER" \
+  > "$REVIEW_DIR/pr.diff" 2> "$REVIEW_DIR/gh-diff.err"
+GH_DIFF_STATUS=$?
+if [ "$GH_DIFF_STATUS" -ne 0 ] || [ ! -s "$REVIEW_DIR/pr.diff" ]; then
+  CLAUDE_STATUS=not-run
 else
-  timeout 600 claude --print \
+  timeout --kill-after=15 490 claude --print \
     --model "$CLAUDE_REVIEW_MODEL" \
-    --output-format text \
+    --output-format json \
     "<the review prompt above, with $PR_NUMBER and $REPO expanded; the complete diff is supplied on stdin>" \
-    < "$REVIEW_OUT.diff" > "$REVIEW_OUT"
+    < "$REVIEW_DIR/pr.diff" > "$REVIEW_DIR/review.json" 2> "$REVIEW_DIR/review.err"
   CLAUDE_STATUS=$?
 fi
+jq -er 'select((.type == "result") and (.is_error == false))
+        | .result | select(type == "string")' \
+  "$REVIEW_DIR/review.json" > "$REVIEW_DIR/review.txt" 2> "$REVIEW_DIR/review-jq.err"
+EXTRACT_STATUS=$?
+VERDICT=$(awk 'NF {line=$0} END {print line}' "$REVIEW_DIR/review.txt" \
+  | grep -E '^[[:space:]*_]*Verdict:[[:space:]*_]*(APPROVE|REQUEST_CHANGES)[[:space:]*_]*$' \
+  | grep -oE 'APPROVE|REQUEST_CHANGES')
 ```
 
-Interpret the result deterministically:
+Interpret the result deterministically — never re-run merely to "check if it finished". A round is **conclusive** only when ALL of the following hold; a partial `gh` diff, a truncated JSON stream rescued by `jq`, or review text with no verdict must never pass as a completed review:
 
-- **`CLAUDE_STATUS` is 0 and `$REVIEW_OUT` is non-empty:** parse that file for the verdict and findings and post it to the PR.
-- **`CLAUDE_STATUS` is nonzero or `$REVIEW_OUT` is empty:** rerun the exact foreground command once. If the rerun also fails, do not invoke Codex or inherit the session model. Post a `Code Review Cannot Proceed` comment, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`.
+- `GH_DIFF_STATUS` is 0 and `$REVIEW_DIR/pr.diff` is non-empty (a diff failure is a `gh` failure — `CLAUDE_STATUS` reads `not-run` so the evidence names the failing component, never Claude);
+- `CLAUDE_STATUS` is 0;
+- `EXTRACT_STATUS` is 0 and `$REVIEW_DIR/review.txt` is non-empty;
+- `VERDICT` is non-empty. The verdict comes only from the review's **final nonblank line**, which the prompt demands be a dedicated `Verdict:` line (the extraction tolerates surrounding Markdown emphasis). Prose that merely mentions a verdict token, an echoed rubric, a refusal with an earlier standalone verdict, or a token embedded in another word (`DISAPPROVE`) can never pass.
+
+**Conclusive:** `$REVIEW_DIR/review.txt` is the round's review with verdict `$VERDICT`. Parse the per-severity findings and post it to the PR. **Anything else — the round is inconclusive.** Before retrying, record the attempt's evidence: `GH_DIFF_STATUS`, `CLAUDE_STATUS` (124 means `timeout` expired and `SIGTERM` ended the call; 137 means the call ignored `SIGTERM` and `--kill-after` sent `SIGKILL`), `EXTRACT_STATUS`, the tails of `review.err`, `gh-diff.err`, and `review-jq.err`, and the envelope's `subtype`/`is_error` from `review.json` if it parsed. Then rerun the exact foreground command once. If the rerun is also inconclusive, do not invoke Codex or inherit the session model. Post the `Code Review Cannot Proceed` comment below, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`.
+
+**Escalation comment (probe failure and inconclusive rounds alike).** The comment must carry the captured evidence — never only a prose conclusion like "completed without producing review output", which leaves the failure undiagnosable. Before posting, truncate each stderr tail to its last 20 lines, cap the result-envelope excerpt at ~2000 characters, and redact anything credential-shaped (API keys, bearer tokens, `sk-`/`ghp_`-style strings, URLs with embedded credentials) — CLI diagnostics can leak local paths and account details, and a PR comment is public within the repo:
+
+```bash
+timeout --kill-after=10 60 gh pr comment $PR_NUMBER --body "$(cat <<EOF
+## Code Review Cannot Proceed
+
+This Codex implementation requires review by the latest Claude Opus model (\`--model $CLAUDE_REVIEW_MODEL\`). The reviewer cannot silently downgrade to Codex because that would be same-family self-review. Marking for human review.
+
+Evidence:
+- Failure point: <probe | review round N attempt M>
+- Statuses: <GH_DIFF_STATUS / CLAUDE_STATUS / EXTRACT_STATUS, or PROBE_STATUS / PROBE_PARSE; note 124 = timed out at <bound>s, 137 = SIGKILL after ignoring SIGTERM>
+- stderr tails (last 20 lines each, redacted): <from the captured stderr files, or "empty">
+- Result envelope (truncated, redacted): <subtype / is_error / result excerpt, or "unparseable">
+EOF
+)"
+COMMENT_STATUS=$?
+```
+
+The escalation posting is itself network-dependent, so it carries the same `timeout --kill-after` bound as every other remote command. If `COMMENT_STATUS` is nonzero, do not stall: note the failed posting in the L16 summary, still remove `$REVIEW_DIR`, still apply the `needs-human-review` labels, and still finish with result `ESCALATED`.
 
 For automatic Codex-runtime review, the PR comment header must identify `opus (latest Claude Opus)`, not `claude session model`. This makes accidental regression to the behavior in the linked failure visible without pinning a model version.
 
@@ -1058,7 +1111,7 @@ Leave the parent in its current state. Add `needs-human-review` alongside `imple
 - **Git**: Clean working directory
 - **Cross-runtime review**: Claude-hosted implementation requires a Codex frontier path; Codex-hosted implementation requires the Claude Code CLI with access to the latest Claude Opus through the `opus` alias. `--reviewer` is the only reviewer-routing override. `--model` and issue routing labels affect implementation only.
 - **Codex access**: The `codex` CLI and `jq` must resolve the latest frontier slug from `codex debug models`; `codex exec --model "$CODEX_FRONTIER_MODEL"` is preferred, and a model-selectable Codex MCP server may be used after an inconclusive CLI review. The Codex CLI is the only Codex method usable for implementation dispatch in Parent Mode.
-- **Claude access**: The `claude` CLI must be on `PATH` and authenticated when a Codex implementation is automatically paired with the latest Claude Opus. Reviewer failure escalates to human review; it never falls back to the implementation model family.
+- **Claude access**: The `claude` CLI must be on `PATH` and authenticated when a Codex implementation is automatically paired with the latest Claude Opus. L8 proves this end-to-end with a bounded `--print --output-format json` probe before the first round; `jq` is required to parse the result envelope. Reviewer failure escalates to human review with the captured exit status and stderr; it never falls back to the implementation model family.
 
 ## Linear API Cheat Sheet
 
