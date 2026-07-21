@@ -229,7 +229,7 @@ An override that selects the implementation model family is allowed but called o
 
 ### Reviewer execution
 
-- Both CLIs run in the foreground, bounded per attempt with `timeout --kill-after` so a `SIGTERM`-ignoring process still dies; the host shell tool's deadline stays strictly longer than the inner bound plus the kill grace so the exit status is always observed.
+- Both CLIs run in the foreground, with every network-dependent command bounded by `timeout --kill-after` so a `SIGTERM`-ignoring process still dies; the host shell tool's deadline stays strictly longer than the attempt's combined worst case so every exit status is observed.
 - The PR diff is supplied on stdin and final review text is captured before the workflow continues.
 - Every review reports `APPROVE` or `REQUEST_CHANGES` and uses `[CRITICAL]`, `[IMPORTANT]`, and `[STYLE]` findings.
 - A failed cross-runtime reviewer is retried once, then escalated to human review. It never falls back to the implementation model family. The escalation comment carries the captured evidence — exit status, stderr tail, and result envelope — so the failure is diagnosable.

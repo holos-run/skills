@@ -452,7 +452,7 @@ PROBE_PARSE=$?
 
 The probe succeeds only when `PROBE_STATUS` and `PROBE_PARSE` are both 0. If `claude` or `jq` is missing, or the probe fails, the Claude reviewer is unavailable: post a `Code Review Cannot Proceed` comment (template below) that names the required model **and includes the probe evidence** — `PROBE_STATUS` and `PROBE_PARSE` plus the tails of `probe.err` and `probe-jq.err`, or the JSON envelope's `subtype`/`result` when the error surfaced there — then add `needs-human-review` to the PR and Linear issue and skip to L16 with result `ESCALATED`. Do not invoke Codex or inherit the current session model, and do not spend review rounds discovering a statically broken CLI.
 
-If the probe succeeds, each round in L9–L11 runs Claude Code as **one foreground, bounded call**, under the same three rules as the Codex CLI reviewer: never background it, never poll for completion, and bound it with `timeout --kill-after=15 <seconds>` so a process that ignores `SIGTERM` still dies from `SIGKILL` 15 s later. The host shell tool's own deadline must be **strictly longer** than the inner bound plus the kill grace, so `timeout`'s exit status is always observed before any host-side kill — with Claude Code's 600000 ms Bash tool maximum that means `timeout --kill-after=15 570` (585 s worst case); a Codex host that allows longer foreground calls may raise the inner bound, keeping the host deadline strictly above inner + 15 s.
+If the probe succeeds, each round in L9–L11 runs Claude Code as **one foreground, bounded call**, under the same three rules as the Codex CLI reviewer: never background it, never poll for completion, and bound every network-dependent command with `timeout --kill-after=<grace> <seconds>` so a process that ignores `SIGTERM` still dies from `SIGKILL`. The host shell tool's own deadline must be **strictly longer** than the attempt's combined worst case — the bounded diff fetch plus the bounded Claude call plus their kill graces (extraction is local and negligible) — so every `timeout` exit status is observed before any host-side kill. With Claude Code's 600000 ms Bash tool maximum that means `timeout --kill-after=10 60` for the diff fetch and `timeout --kill-after=15 490` for the Claude call (≤ 575 s combined worst case); a Codex host that allows longer foreground calls may raise the Claude bound, keeping the combined worst case strictly below the host deadline.
 
 Claude Code `--print` accepts a prompt argument and appends piped stdin to that prompt; supply the diff on stdin. Use `--output-format json`, not `text`: the JSON envelope makes success machine-checkable (`type`, `is_error`, non-empty `result`) where an empty text stream is ambiguous, and capturing stderr separately means every failure leaves diagnosable evidence. Each attempt starts from a clean slate so a failed attempt can never surface a previous attempt's files:
 
@@ -460,12 +460,13 @@ Claude Code `--print` accepts a prompt argument and appends piped stdin to that 
 rm -f "$REVIEW_DIR"/pr.diff "$REVIEW_DIR"/gh-diff.err \
       "$REVIEW_DIR"/review.json "$REVIEW_DIR"/review.err \
       "$REVIEW_DIR"/review.txt "$REVIEW_DIR"/review-jq.err
-gh pr diff "$PR_NUMBER" > "$REVIEW_DIR/pr.diff" 2> "$REVIEW_DIR/gh-diff.err"
+timeout --kill-after=10 60 gh pr diff "$PR_NUMBER" \
+  > "$REVIEW_DIR/pr.diff" 2> "$REVIEW_DIR/gh-diff.err"
 GH_DIFF_STATUS=$?
 if [ "$GH_DIFF_STATUS" -ne 0 ] || [ ! -s "$REVIEW_DIR/pr.diff" ]; then
   CLAUDE_STATUS=not-run
 else
-  timeout --kill-after=15 570 claude --print \
+  timeout --kill-after=15 490 claude --print \
     --model "$CLAUDE_REVIEW_MODEL" \
     --output-format json \
     "<the review prompt above, with $PR_NUMBER and $REPO expanded; the complete diff is supplied on stdin>" \
