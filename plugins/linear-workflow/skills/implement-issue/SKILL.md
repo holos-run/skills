@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Workers inherit the session-configured model by default; override with a --model argument or issue routing labels. Code review uses the opposite model family from the primary implementation runtime (the latest Claude Opus reviews Codex; the Codex frontier model reviews Claude) and posts findings back to the PR; override the reviewer with --reviewer. Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.15.0
+version: 2.15.1
 ---
 
 # Implement Issue
@@ -69,7 +69,7 @@ CODEX_FRONTIER_MODEL=$(codex debug models | jq -er '
 
 Require a non-empty result and pass `--model "$CODEX_FRONTIER_MODEL"` to every `codex exec` call. Resolve from the catalog at runtime instead of hardcoding a versioned model slug or inheriting a possibly stale configured default. If the frontier model cannot be resolved, treat the Codex CLI route as unavailable.
 
-**Always run `codex exec` in the foreground and let the Bash call return — it returns exactly when Codex exits.** Never background it (no `run_in_background`, `&`, or `disown`) and never poll `ps`/`pgrep`/`jobs`/`/proc` to detect completion: process-table greps match the agent's own shell or the `grep` itself and deadlock the session until the harness force-recovers it. Bound long calls with `timeout`. The L8 Codex CLI reviewer (Method 1) applies this in full detail.
+**Always run `codex exec` in the foreground and define completion by an observed exit status.** A host execution tool may yield a live connector session before the foreground process exits: a result with an exit code is complete, while a result with a session handle (for example, `session_id`) and no exit code is still running. In the latter case, wait on that exact handle with the connector-native stdin/wait operation until it reports an exit code; do not restart the command. If an outer orchestration call itself yields a `cell_id`, resume that cell with its own wait operation and let it continue waiting on the shell session — never restart either layer. Waiting this way preserves the same foreground execution and is not backgrounding, process-table polling, or a second attempt. Never background the process (no `run_in_background`, `&`, or `disown`) and never poll `ps`/`pgrep`/`jobs`/`/proc` to detect completion: process-table greps match the agent's own shell or the `grep` itself and deadlock the session until the harness force-recovers it. Bound long calls with `timeout`, and allow enough cumulative connector wait time to observe that inner timeout's exit status. The L8 Codex CLI reviewer (Method 1) applies this in full detail.
 
 ## Primary Runtime Detection
 
@@ -343,11 +343,30 @@ CODEX_FRONTIER_MODEL=$(codex debug models | jq -er '
 test -n "$CODEX_FRONTIER_MODEL"
 ```
 
-If found, each round in L9–L11 runs Codex as **one foreground, bounded Bash call** whose review is captured to a file. Three rules make this reliable — they exist because the dominant failure mode is backgrounding Codex and then trying to detect completion by grepping the process table for its PID, which matches the agent's own shell (or the `grep`/`pgrep` itself) and deadlocks the session until the harness force-recovers it:
+If found, each round in L9–L11 runs Codex as **one foreground, bounded Bash call** whose review is captured to a file. Four rules make this reliable — they exist because execution connectors can yield before process exit, while process-table completion checks can match the agent's own shell (or the `grep`/`pgrep` itself) and deadlock the session until the harness force-recovers it:
 
-1. **Never background it.** Run `codex exec` as a single foreground Bash call and let the call return — the return *is* the completion signal. Do not set `run_in_background`, do not append `&`, do not `disown`.
+1. **Never background it.** Run `codex exec` as a single foreground Bash call. Do not set `run_in_background`, do not append `&`, do not `disown`.
 2. **Never poll for completion.** Do not run `ps`, `pgrep`, `jobs`, `wait`, or read `/proc` to find Codex. `--output-last-message` writes the review to the output file atomically when Codex exits; there is nothing to poll.
-3. **Bound it.** Wrap the call in `timeout 600` and set the Bash tool's own timeout to its `600000` ms maximum. A round that needs longer than 10 minutes is treated as inconclusive (below), never waited on indefinitely.
+3. **Bound it.** Wrap the call in `timeout 600`. Configure the host execution call and its cumulative connector waits to allow the inner timeout to finish and report its exit status. A completed round whose inner timeout expires is inconclusive (below); a connector yield before that point is merely still running.
+4. **Wait through yields on the same session.** Completion means the host connector has reported an exit code, not that its initial call returned control. If the initial result contains a session handle such as `session_id` but no exit code, call the connector-native stdin/wait operation with empty input on that exact handle until an exit code is present. Never restart the Bash command. If the outer tool orchestration yields a `cell_id`, resume that same cell with its wait operation; it must continue the existing connector wait. These waits preserve the one foreground call and are neither process-table polling nor additional attempts.
+
+Harness adapters should implement that fourth rule with their native field and operation names. For example:
+
+```javascript
+let run = await tools.exec_command({ cmd: reviewCommand, yield_time_ms: 30000 })
+const sessionId = run.session_id
+while (run.exit_code == null) {
+  if (!sessionId) {
+    throw new Error("execution yielded without an exit code or session handle")
+  }
+  run = await tools.write_stdin({
+    session_id: sessionId,
+    chars: "",
+    yield_time_ms: 60000,
+  })
+}
+// Parse artifacts only after exit_code is non-null.
+```
 
 The command L9 runs each round (feed the diff on stdin so Codex spends no turns re-fetching it):
 
@@ -368,7 +387,9 @@ else
 fi
 ```
 
-Interpret the result deterministically — never re-run merely to "check if it finished":
+Before interpreting the result, apply the completion gate: the host execution session must have an observed exit status. A connector `session_id` with no exit code, a status variable or status artifact not yet written, or an empty redirect-target file while the process runs means **still running**, never inconclusive. Continue waiting on the same session. Only a completed session with an observed exit status may be interpreted below or consume a retry attempt.
+
+Interpret the completed result deterministically — never re-run merely to "check if it finished":
 
 - **`CODEX_STATUS` is 0 and `$REVIEW_OUT` is non-empty:** that file is the round's review. Parse it for the verdict and per-severity findings and post it to the PR.
 - **`CODEX_STATUS` is nonzero or `$REVIEW_OUT` is empty:** the round is inconclusive. Re-run this exact command **once**. If the rerun is also inconclusive, fall through to Method 2.
@@ -452,7 +473,7 @@ PROBE_PARSE=$?
 
 The probe succeeds only when `PROBE_STATUS` and `PROBE_PARSE` are both 0. If `claude` or `jq` is missing, or the probe fails, the Claude reviewer is unavailable: post a `Code Review Cannot Proceed` comment (template below) that names the required model **and includes the probe evidence** — `PROBE_STATUS` and `PROBE_PARSE` plus the tails of `probe.err` and `probe-jq.err`, or the JSON envelope's `subtype`/`result` when the error surfaced there — then add `needs-human-review` to the PR and Linear issue and skip to L16 with result `ESCALATED`. Do not invoke Codex or inherit the current session model, and do not spend review rounds discovering a statically broken CLI.
 
-If the probe succeeds, each round in L9–L11 runs Claude Code as **one foreground, bounded call**, under the same three rules as the Codex CLI reviewer: never background it, never poll for completion, and bound every network-dependent command with `timeout --kill-after=<grace> <seconds>` so a process that ignores `SIGTERM` still dies from `SIGKILL`. The host shell tool's own deadline must be **strictly longer** than the attempt's combined worst case — the bounded diff fetch plus the bounded Claude call plus their kill graces (extraction is local and negligible) — so every `timeout` exit status is observed before any host-side kill. With Claude Code's 600000 ms Bash tool maximum that means `timeout --kill-after=10 60` for the diff fetch and `timeout --kill-after=15 490` for the Claude call (≤ 575 s combined worst case); a Codex host that allows longer foreground calls may raise the Claude bound, keeping the combined worst case strictly below the host deadline.
+If the probe succeeds, each round in L9–L11 runs Claude Code as **one foreground, bounded call**, under the same four rules as the Codex CLI reviewer: never background it, never poll the process table for completion, bound every network-dependent command with `timeout --kill-after=<grace> <seconds>`, and wait through connector yields on the exact same session until the connector reports an exit code. A foreground tool session may yield control before process exit; that yield is still the first attempt and waiting on it with the connector-native stdin/wait operation is not backgrounding, polling, or another attempt. If an outer orchestration cell yields, resume its `cell_id` with the outer wait operation so it continues waiting on the existing shell session. The inner `timeout --kill-after=10 60` diff fetch and `timeout --kill-after=15 490` Claude call remain authoritative: cumulative connector waits must allow enough time to observe their exit status, including kill grace, rather than imposing a shorter host deadline. A host that permits a longer Claude bound may raise it only when the combined inner worst case remains strictly below the host deadline.
 
 Claude Code `--print` accepts a prompt argument and appends piped stdin to that prompt; supply the diff on stdin. Use `--output-format json`, not `text`: the JSON envelope makes success machine-checkable (`type`, `is_error`, non-empty `result`) where an empty text stream is ambiguous, and capturing stderr separately means every failure leaves diagnosable evidence. Each attempt starts from a clean slate so a failed attempt can never surface a previous attempt's files:
 
@@ -482,14 +503,25 @@ VERDICT=$(awk 'NF {line=$0} END {print line}' "$REVIEW_DIR/review.txt" \
   | grep -oE 'APPROVE|REQUEST_CHANGES')
 ```
 
-Interpret the result deterministically — never re-run merely to "check if it finished". A round is **conclusive** only when ALL of the following hold; a partial `gh` diff, a truncated JSON stream rescued by `jq`, or review text with no verdict must never pass as a completed review:
+**Apply the completion gate before inspecting any status variable or artifact.** The host connector must report an exit code for the foreground Bash call. If it instead reports a `session_id` with no exit code, continue waiting on that exact session with empty connector-native stdin/wait calls. If the outer orchestration yields a `cell_id`, resume that cell with its own wait operation. Until an exit code is observed, unset `GH_DIFF_STATUS` / `CLAUDE_STATUS` / `EXTRACT_STATUS`, missing status artifacts, and empty `review.json` / `review.err` redirect targets are expected signs that the process is still running — never evidence of an inconclusive attempt. Do not read or parse the artifacts, restart the command, or charge a retry while the session is live.
+
+After the completion gate passes, interpret the result deterministically — never re-run merely to "check if it finished". A round is **conclusive** only when ALL of the following hold; a partial `gh` diff, a truncated JSON stream rescued by `jq`, or review text with no verdict must never pass as a completed review:
 
 - `GH_DIFF_STATUS` is 0 and `$REVIEW_DIR/pr.diff` is non-empty (a diff failure is a `gh` failure — `CLAUDE_STATUS` reads `not-run` so the evidence names the failing component, never Claude);
 - `CLAUDE_STATUS` is 0;
 - `EXTRACT_STATUS` is 0 and `$REVIEW_DIR/review.txt` is non-empty;
 - `VERDICT` is non-empty. The verdict comes only from the review's **final nonblank line**, which the prompt demands be a dedicated `Verdict:` line (the extraction tolerates surrounding Markdown emphasis). Prose that merely mentions a verdict token, an echoed rubric, a refusal with an earlier standalone verdict, or a token embedded in another word (`DISAPPROVE`) can never pass.
 
-**Conclusive:** `$REVIEW_DIR/review.txt` is the round's review with verdict `$VERDICT`. Parse the per-severity findings and post it to the PR. **Anything else — the round is inconclusive.** Before retrying, record the attempt's evidence: `GH_DIFF_STATUS`, `CLAUDE_STATUS` (124 means `timeout` expired and `SIGTERM` ended the call; 137 means the call ignored `SIGTERM` and `--kill-after` sent `SIGKILL`), `EXTRACT_STATUS`, the tails of `review.err`, `gh-diff.err`, and `review-jq.err`, and the envelope's `subtype`/`is_error` from `review.json` if it parsed. Then rerun the exact foreground command once. If the rerun is also inconclusive, do not invoke Codex or inherit the session model. Post the `Code Review Cannot Proceed` comment below, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`.
+**Conclusive:** `$REVIEW_DIR/review.txt` is the round's review with verdict `$VERDICT`. Parse the per-severity findings and post it to the PR. **Anything else after observed connector completion — the round is inconclusive.** Before retrying, record these fields separately so a connector yield can never be mistaken for an empty Claude result:
+
+- connector session ID (or `none` when the call never yielded) and connector exit code;
+- attempt start and completion timestamps;
+- whether the shell reached the `GH_DIFF_STATUS`, `CLAUDE_STATUS`, and `EXTRACT_STATUS` recording lines;
+- `GH_DIFF_STATUS`, `CLAUDE_STATUS` (124 means `timeout` expired and `SIGTERM` ended the call; 137 means the call ignored `SIGTERM` and `--kill-after` sent `SIGKILL`), and `EXTRACT_STATUS`;
+- byte counts for `pr.diff`, `gh-diff.err`, `review.json`, `review.err`, `review.txt`, and `review-jq.err`, measured only after connector completion;
+- the tails of `review.err`, `gh-diff.err`, and `review-jq.err`, plus the envelope's `subtype`/`is_error` from `review.json` if it parsed.
+
+Then rerun the exact foreground command once. If the rerun is also inconclusive, do not invoke Codex or inherit the current session model. Post the `Code Review Cannot Proceed` comment below, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`.
 
 **Escalation comment (probe failure and inconclusive rounds alike).** The comment must carry the captured evidence — never only a prose conclusion like "completed without producing review output", which leaves the failure undiagnosable. Before posting, truncate each stderr tail to its last 20 lines, cap the result-envelope excerpt at ~2000 characters, and redact anything credential-shaped (API keys, bearer tokens, `sk-`/`ghp_`-style strings, URLs with embedded credentials) — CLI diagnostics can leak local paths and account details, and a PR comment is public within the repo:
 
