@@ -489,24 +489,27 @@ Interpret the result deterministically — never re-run merely to "check if it f
 - `EXTRACT_STATUS` is 0 and `$REVIEW_DIR/review.txt` is non-empty;
 - `VERDICT` is non-empty. The verdict comes only from the review's **final nonblank line**, which the prompt demands be a dedicated `Verdict:` line (the extraction tolerates surrounding Markdown emphasis). Prose that merely mentions a verdict token, an echoed rubric, a refusal with an earlier standalone verdict, or a token embedded in another word (`DISAPPROVE`) can never pass.
 
-**Conclusive:** `$REVIEW_DIR/review.txt` is the round's review with verdict `$VERDICT`. Parse the per-severity findings and post it to the PR. **Anything else — the round is inconclusive.** Before retrying, record the attempt's evidence: `GH_DIFF_STATUS`, `CLAUDE_STATUS` (124 means `timeout` killed the call), `EXTRACT_STATUS`, the tails of `review.err`, `gh-diff.err`, and `review-jq.err`, and the envelope's `subtype`/`is_error` from `review.json` if it parsed. Then rerun the exact foreground command once. If the rerun is also inconclusive, do not invoke Codex or inherit the session model. Post the `Code Review Cannot Proceed` comment below, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`.
+**Conclusive:** `$REVIEW_DIR/review.txt` is the round's review with verdict `$VERDICT`. Parse the per-severity findings and post it to the PR. **Anything else — the round is inconclusive.** Before retrying, record the attempt's evidence: `GH_DIFF_STATUS`, `CLAUDE_STATUS` (124 means `timeout` expired and `SIGTERM` ended the call; 137 means the call ignored `SIGTERM` and `--kill-after` sent `SIGKILL`), `EXTRACT_STATUS`, the tails of `review.err`, `gh-diff.err`, and `review-jq.err`, and the envelope's `subtype`/`is_error` from `review.json` if it parsed. Then rerun the exact foreground command once. If the rerun is also inconclusive, do not invoke Codex or inherit the session model. Post the `Code Review Cannot Proceed` comment below, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`.
 
 **Escalation comment (probe failure and inconclusive rounds alike).** The comment must carry the captured evidence — never only a prose conclusion like "completed without producing review output", which leaves the failure undiagnosable. Before posting, truncate each stderr tail to its last 20 lines, cap the result-envelope excerpt at ~2000 characters, and redact anything credential-shaped (API keys, bearer tokens, `sk-`/`ghp_`-style strings, URLs with embedded credentials) — CLI diagnostics can leak local paths and account details, and a PR comment is public within the repo:
 
 ```bash
-gh pr comment $PR_NUMBER --body "$(cat <<EOF
+timeout --kill-after=10 60 gh pr comment $PR_NUMBER --body "$(cat <<EOF
 ## Code Review Cannot Proceed
 
 This Codex implementation requires review by the latest Claude Opus model (\`--model $CLAUDE_REVIEW_MODEL\`). The reviewer cannot silently downgrade to Codex because that would be same-family self-review. Marking for human review.
 
 Evidence:
 - Failure point: <probe | review round N attempt M>
-- Statuses: <GH_DIFF_STATUS / CLAUDE_STATUS / EXTRACT_STATUS, or PROBE_STATUS / PROBE_PARSE; note 124 = timed out at <bound>s>
+- Statuses: <GH_DIFF_STATUS / CLAUDE_STATUS / EXTRACT_STATUS, or PROBE_STATUS / PROBE_PARSE; note 124 = timed out at <bound>s, 137 = SIGKILL after ignoring SIGTERM>
 - stderr tails (last 20 lines each, redacted): <from the captured stderr files, or "empty">
 - Result envelope (truncated, redacted): <subtype / is_error / result excerpt, or "unparseable">
 EOF
 )"
+COMMENT_STATUS=$?
 ```
+
+The escalation posting is itself network-dependent, so it carries the same `timeout --kill-after` bound as every other remote command. If `COMMENT_STATUS` is nonzero, do not stall: note the failed posting in the L16 summary, still remove `$REVIEW_DIR`, still apply the `needs-human-review` labels, and still finish with result `ESCALATED`.
 
 For automatic Codex-runtime review, the PR comment header must identify `opus (latest Claude Opus)`, not `claude session model`. This makes accidental regression to the behavior in the linked failure visible without pinning a model version.
 
