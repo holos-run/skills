@@ -321,9 +321,7 @@ Examine every changed file. Report findings using these severity levels:
 - [IMPORTANT] — error handling gaps, race conditions, missing validation, test gaps
 - [STYLE] — naming, formatting, dead code, minor improvements
 
-At the end, state your verdict:
-- APPROVE — if no critical or important findings
-- REQUEST_CHANGES — if any critical or important findings exist
+End your review with a final line containing exactly `Verdict: APPROVE` (no critical or important findings) or `Verdict: REQUEST_CHANGES` (any critical or important findings exist). A review without this final verdict line is treated as inconclusive.
 
 List each finding with file path, line number, severity, and description.
 ```
@@ -434,6 +432,7 @@ Resolve `CLAUDE_REVIEW_MODEL`: `claude` and `opus` both resolve to the moving `o
 command -v claude >/dev/null
 command -v jq >/dev/null
 REVIEW_DIR=$(mktemp -d)
+test -n "$REVIEW_DIR" && test -d "$REVIEW_DIR"
 timeout --kill-after=15 120 claude --print \
   --model "$CLAUDE_REVIEW_MODEL" \
   --output-format json \
@@ -446,7 +445,7 @@ jq -e '(.type == "result") and (.is_error == false)
 PROBE_PARSE=$?
 ```
 
-`mktemp -d` creates `REVIEW_DIR` with mode 700; every reviewer artifact (diff, envelopes, stderr) lives inside it — never in ad-hoc sibling paths — and the whole directory is removed with `rm -rf "$REVIEW_DIR"` when review concludes or escalates, because it holds the full PR diff and CLI diagnostics. The jq filter requires `.is_error == false` literally (a missing field must fail, so `| not` is not acceptable) and a non-empty string `result`.
+`mktemp -d` creates `REVIEW_DIR` with mode 700; every reviewer artifact (diff, envelopes, stderr) lives inside it — never in ad-hoc sibling paths — and the whole directory is removed with `rm -rf "$REVIEW_DIR"` when review concludes or escalates, because it holds the full PR diff and CLI diagnostics. If the `test` guard fails (`mktemp` failed or returned empty), stop immediately and escalate: never construct child paths from an unverified `REVIEW_DIR`, because an empty prefix turns them into root-level paths like `/pr.diff`. Run the probe with the host shell tool's deadline strictly above its 135 s worst case (120 s inner bound + 15 s kill grace) — e.g., 180000 ms for Claude Code's Bash tool, whose default deadline is shorter. The jq filter requires `.is_error == false` literally (a missing field must fail, so `| not` is not acceptable) and a non-empty string `result`.
 
 The probe succeeds only when `PROBE_STATUS` and `PROBE_PARSE` are both 0. If `claude` or `jq` is missing, or the probe fails, the Claude reviewer is unavailable: post a `Code Review Cannot Proceed` comment (template below) that names the required model **and includes the probe evidence** — `PROBE_STATUS` and `PROBE_PARSE` plus the tails of `probe.err` and `probe-jq.err`, or the JSON envelope's `subtype`/`result` when the error surfaced there — then add `needs-human-review` to the PR and Linear issue and skip to L16 with result `ESCALATED`. Do not invoke Codex or inherit the current session model, and do not spend review rounds discovering a statically broken CLI.
 
@@ -474,7 +473,8 @@ jq -er 'select((.type == "result") and (.is_error == false))
         | .result | select(type == "string")' \
   "$REVIEW_DIR/review.json" > "$REVIEW_DIR/review.txt" 2> "$REVIEW_DIR/review-jq.err"
 EXTRACT_STATUS=$?
-VERDICT=$(grep -oE 'APPROVE|REQUEST_CHANGES' "$REVIEW_DIR/review.txt" | tail -1)
+VERDICT=$(grep -E '^[[:space:]*_]*Verdict:[[:space:]*_]*(APPROVE|REQUEST_CHANGES)[[:space:]*_]*$' \
+  "$REVIEW_DIR/review.txt" | tail -1 | grep -oE 'APPROVE|REQUEST_CHANGES')
 ```
 
 Interpret the result deterministically — never re-run merely to "check if it finished". A round is **conclusive** only when ALL of the following hold; a partial `gh` diff, a truncated JSON stream rescued by `jq`, or review text with no verdict must never pass as a completed review:
@@ -482,7 +482,7 @@ Interpret the result deterministically — never re-run merely to "check if it f
 - `GH_DIFF_STATUS` is 0 and `$REVIEW_DIR/pr.diff` is non-empty (a diff failure is a `gh` failure — record it as such, not as a Claude failure);
 - `CLAUDE_STATUS` is 0;
 - `EXTRACT_STATUS` is 0 and `$REVIEW_DIR/review.txt` is non-empty;
-- `VERDICT` is non-empty. The review's verdict is the **last** verdict token in the text (reviews commonly echo the rubric's tokens earlier); text containing no token — a refusal, an error message, prose without a verdict — is not a review.
+- `VERDICT` is non-empty. The verdict comes only from a dedicated `Verdict:` line, which the review prompt demands as the final line (the extraction tolerates surrounding Markdown emphasis, and the last such line wins). Prose that merely mentions a verdict token, an echoed rubric, a refusal, or a token embedded in another word (`DISAPPROVE`) can never pass.
 
 **Conclusive:** `$REVIEW_DIR/review.txt` is the round's review with verdict `$VERDICT`. Parse the per-severity findings and post it to the PR. **Anything else — the round is inconclusive.** Before retrying, record the attempt's evidence: `GH_DIFF_STATUS`, `CLAUDE_STATUS` (124 means `timeout` killed the call), `EXTRACT_STATUS`, the tails of `review.err`, `gh-diff.err`, and `review-jq.err`, and the envelope's `subtype`/`is_error` from `review.json` if it parsed. Then rerun the exact foreground command once. If the rerun is also inconclusive, do not invoke Codex or inherit the session model. Post the `Code Review Cannot Proceed` comment below, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`.
 
