@@ -354,14 +354,18 @@ Harness adapters should implement that fourth rule with their native field and o
 
 ```javascript
 let run = await tools.exec_command({ cmd: reviewCommand, yield_time_ms: 30000 })
-while (run.session_id && run.exit_code === undefined) {
+const sessionId = run.session_id
+while (run.exit_code == null) {
+  if (!sessionId) {
+    throw new Error("execution yielded without an exit code or session handle")
+  }
   run = await tools.write_stdin({
-    session_id: run.session_id,
+    session_id: sessionId,
     chars: "",
     yield_time_ms: 60000,
   })
 }
-// Parse artifacts only after exit_code is defined.
+// Parse artifacts only after exit_code is non-null.
 ```
 
 The command L9 runs each round (feed the diff on stdin so Codex spends no turns re-fetching it):
