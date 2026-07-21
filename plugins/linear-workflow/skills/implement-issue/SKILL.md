@@ -53,13 +53,21 @@ This skill runs inside a git worktree created by an agent harness — a Claude C
 - **Session branch naming varies by harness.** Examples: `claude/<slug>` (Claude Code remote sessions), `cyrus/<identifier>-<slug>`, or `<user>/<identifier>-<slug>` (Linear's `gitBranchName`). Never assume a specific prefix — match a branch to an issue by checking whether the lowercased branch name contains the lowercased issue identifier.
 - **Push with `git push origin HEAD`** (no `-u`) so upstream tracking stays on `origin/main`.
 
-## Codex Model Mapping
+## Codex Frontier Model Resolution
 
-When this skill invokes `codex exec`, always pass `--model gpt-5.5` explicitly.
+Before this skill invokes `codex exec` for review or implementation, resolve `CODEX_FRONTIER_MODEL` once from the current Codex model catalog. Select the visible model whose description identifies it as the latest frontier model, preferring the lowest numeric priority:
 
-- Codex CLI 5.3: `gpt-4.1`
-- Codex CLI 5.4: `o4-mini` (alias: `gpt-4.1-mini`)
-- Codex CLI 5.5: `gpt-5.5` (current default for this skill)
+```bash
+CODEX_FRONTIER_MODEL=$(codex debug models | jq -er '
+  [.models[]
+   | select(.visibility == "list")
+   | select(((.description // "") | ascii_downcase) | contains("latest frontier"))]
+  | sort_by(.priority)
+  | (.[0].slug // empty)
+')
+```
+
+Require a non-empty result and pass `--model "$CODEX_FRONTIER_MODEL"` to every `codex exec` call. Resolve from the catalog at runtime instead of hardcoding a versioned model slug or inheriting a possibly stale configured default. If the frontier model cannot be resolved, treat the Codex CLI route as unavailable.
 
 **Always run `codex exec` in the foreground and let the Bash call return — it returns exactly when Codex exits.** Never background it (no `run_in_background`, `&`, or `disown`) and never poll `ps`/`pgrep`/`jobs`/`/proc` to detect completion: process-table greps match the agent's own shell or the `grep` itself and deadlock the session until the harness force-recovers it. Bound long calls with `timeout`. The L8 Codex CLI reviewer (Method 1) applies this in full detail.
 
@@ -282,7 +290,7 @@ PR_NUMBER=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].nu
 
 1. **`REVIEWER_OVERRIDE` is set** → honor it. `codex` selects the Codex frontier reviewer. `claude` or `opus` selects the latest Claude Opus through `--model opus`. `fable`/`sonnet`/`haiku` selects that explicit Claude model.
 2. **`PRIMARY_RUNTIME=codex`** → select the latest Claude Opus through `--model opus`.
-3. **`PRIMARY_RUNTIME=claude`** → select the Codex frontier reviewer (`gpt-5.5`).
+3. **`PRIMARY_RUNTIME=claude`** → select the latest Codex frontier reviewer resolved from the current Codex model catalog.
 4. **`PRIMARY_RUNTIME=unknown` and project config contains a reviewer command** → use the fenced shell command from the project's `CLAUDE.md` or `AGENTS.md` `## Code Review` section.
 5. **`PRIMARY_RUNTIME=unknown` and no project reviewer exists** → post a `Code Review Cannot Proceed` comment, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`. Do not guess and risk same-runtime self-review.
 
@@ -298,8 +306,6 @@ gh pr comment $PR_NUMBER --body "$(cat <<EOF
 EOF
 )"
 ```
-
-The Codex cloud path (`@codex review`, method 3 below) posts its review on the PR natively — do not duplicate it with a second comment.
 
 If `REVIEWER_OVERRIDE` deliberately selects the same model family as `PRIMARY_RUNTIME`, add this line below the PR comment heading for every reviewer path: `Same-family review explicitly requested via --reviewer; cross-runtime pairing was overridden.`
 
@@ -324,10 +330,19 @@ List each finding with file path, line number, severity, and description.
 
 Probe the following methods **in order** and use the first one that can run the Codex frontier model. Record the chosen method once in L8 and reuse it for every round in L9–L11. Never fall back to Claude when this path fails: that would turn a Claude implementation into same-family self-review.
 
-**Method 1 — Codex CLI (preferred).** Check availability:
+**Method 1 — Codex CLI (preferred).** Check CLI and catalog availability, then resolve and record `CODEX_FRONTIER_MODEL` once for every review round:
 
 ```bash
 command -v codex >/dev/null
+command -v jq >/dev/null
+CODEX_FRONTIER_MODEL=$(codex debug models | jq -er '
+  [.models[]
+   | select(.visibility == "list")
+   | select(((.description // "") | ascii_downcase) | contains("latest frontier"))]
+  | sort_by(.priority)
+  | (.[0].slug // empty)
+')
+test -n "$CODEX_FRONTIER_MODEL"
 ```
 
 If found, each round in L9–L11 runs Codex as **one foreground, bounded Bash call** whose review is captured to a file. Three rules make this reliable — they exist because the dominant failure mode is backgrounding Codex and then trying to detect completion by grepping the process table for its PID, which matches the agent's own shell (or the `grep`/`pgrep` itself) and deadlocks the session until the harness force-recovers it:
@@ -345,7 +360,7 @@ if [ ! -s "$REVIEW_OUT.diff" ]; then
   CODEX_STATUS=1
 else
   timeout 600 codex exec \
-    --model gpt-5.5 \
+    --model "$CODEX_FRONTIER_MODEL" \
     --dangerously-bypass-approvals-and-sandbox \
     --skip-git-repo-check \
     --output-last-message "$REVIEW_OUT" \
@@ -360,23 +375,17 @@ Interpret the result deterministically — never re-run merely to "check if it f
 - **`CODEX_STATUS` is 0 and `$REVIEW_OUT` is non-empty:** that file is the round's review. Parse it for the verdict and per-severity findings and post it to the PR.
 - **`CODEX_STATUS` is nonzero or `$REVIEW_OUT` is empty:** the round is inconclusive. Re-run this exact command **once**. If the rerun is also inconclusive, fall through to Method 2.
 
-**Method 2 — Codex MCP server.** If the CLI is unavailable or inconclusive, check whether a Codex MCP server is connected to this session: use tool discovery with query `+codex` and look for a Codex conversation tool. Use it only if the invocation accepts an explicit `model: "gpt-5.5"`; invoke it with that model and the review prompt, then parse the returned conversation text exactly like CLI output. A Codex tool whose model cannot be pinned does not satisfy this reviewer route.
+**Method 2 — Codex MCP server.** If the CLI invocation is inconclusive, check whether a Codex MCP server is connected to this session: use tool discovery with query `+codex` and look for a Codex conversation tool. Use it only if the latest frontier slug was resolved from the Codex catalog and the tool accepts an explicit `model` argument; invoke it with `model: "$CODEX_FRONTIER_MODEL"` and the review prompt, then parse the returned conversation text exactly like CLI output. A Codex tool whose model cannot be set to the resolved frontier slug does not satisfy this reviewer route.
 
-**Method 3 — Codex cloud via GitHub (`@codex review`).** If neither the CLI nor a model-pinnable MCP server is available, check whether the OpenAI Codex GitHub integration is installed on the repo — the practical probe is to post the trigger comment and watch for a response:
+Do not use `@codex review` as a fallback for this route because the GitHub integration does not accept the dynamically resolved frontier slug.
 
-```bash
-gh pr comment $PR_NUMBER --body "@codex review"
-```
-
-Then poll for Codex's review: every 60 seconds (`sleep 60`), list new reviews and comments since the trigger via `gh pr view $PR_NUMBER --json reviews,comments` and look for a response authored by the Codex bot (author login containing `codex`, e.g. `chatgpt-codex-connector`). Parse its findings and verdict like CLI output (treat an explicit approval or absence of critical/important findings as APPROVE). Time out after 15 minutes; a timeout means this method is unavailable. Codex posts its review on the PR itself, satisfying the post-back requirement for this method.
-
-**If all three methods fail:** do not fall back to Claude. Surface an explicit error and escalate now (do not proceed to L9–L11):
+**If both methods fail:** do not fall back to Claude. Surface an explicit error and escalate now (do not proceed to L9–L11):
 
 ```bash
 gh pr comment $PR_NUMBER --body "$(cat <<'EOF'
 ## Code Review Cannot Proceed
 
-This implementation is routed to the Codex frontier reviewer, but no qualifying invocation method is available: `codex exec --model gpt-5.5` was unavailable or inconclusive, no connected Codex MCP tool could pin `gpt-5.5`, and the Codex GitHub integration did not respond. The reviewer cannot silently downgrade to Claude because that may be the implementation model. Marking for human review.
+This implementation is routed to the latest Codex frontier reviewer, but no qualifying invocation method is available: the current frontier slug could not be resolved from `codex debug models`, `codex exec --model "$CODEX_FRONTIER_MODEL"` was inconclusive, or no connected Codex MCP tool could use the resolved frontier slug. The reviewer cannot silently downgrade to Claude because that may be the implementation model. Marking for human review.
 EOF
 )"
 gh pr edit $PR_NUMBER --add-label "needs-human-review"
@@ -398,7 +407,15 @@ Example from a project's CLAUDE.md:
 ## Code Review
 
 ```bash
-codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
+CODEX_FRONTIER_MODEL=$(codex debug models | jq -er '
+  [.models[]
+   | select(.visibility == "list")
+   | select(((.description // "") | ascii_downcase) | contains("latest frontier"))]
+  | sort_by(.priority)
+  | (.[0].slug // empty)
+')
+test -n "$CODEX_FRONTIER_MODEL"
+codex exec --model "$CODEX_FRONTIER_MODEL" --dangerously-bypass-approvals-and-sandbox \
   "Review PR #$PR_NUMBER on branch $BRANCH in $REPO. \
    Report findings as [CRITICAL], [IMPORTANT], or [STYLE]. \
    Respond with APPROVE or REQUEST_CHANGES."
@@ -450,7 +467,7 @@ Run the reviewer selected in L8. Parse the output for:
 - **Verdict**: APPROVE or REQUEST_CHANGES
 - **Finding counts** by severity: CRITICAL, IMPORTANT, STYLE
 
-Post the review back to the PR as a comment per the "Posting the review back to the PR" requirement in L8 (skip for the `@codex review` cloud method, which posts natively). This applies to every round — L9, L10, and L11.
+Post the review back to the PR as a comment per the "Posting the review back to the PR" requirement in L8. This applies to every round — L9, L10, and L11.
 
 **If APPROVE (no findings):** Skip to step L12.
 
@@ -832,7 +849,15 @@ Agent(
 If routing selects Codex, run the Codex CLI directly:
 
 ```bash
-codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
+CODEX_FRONTIER_MODEL=$(codex debug models | jq -er '
+  [.models[]
+   | select(.visibility == "list")
+   | select(((.description // "") | ascii_downcase) | contains("latest frontier"))]
+  | sort_by(.priority)
+  | (.[0].slug // empty)
+')
+test -n "$CODEX_FRONTIER_MODEL"
+codex exec --model "$CODEX_FRONTIER_MODEL" --dangerously-bypass-approvals-and-sandbox \
   "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER> to implement this sub-issue end-to-end.
 The skill handles branching, implementation, code review, CI, merge, and issue transitions.
 Run to completion. Return a short summary: result (MERGED | MERGED_WITH_DEFERRED_ACS |
@@ -893,7 +918,15 @@ Use a retry loop with up to **3 total attempts** per sub-issue:
 
    If the route is Codex:
    ```bash
-   codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
+   CODEX_FRONTIER_MODEL=$(codex debug models | jq -er '
+     [.models[]
+      | select(.visibility == "list")
+      | select(((.description // "") | ascii_downcase) | contains("latest frontier"))]
+     | sort_by(.priority)
+     | (.[0].slug // empty)
+   ')
+   test -n "$CODEX_FRONTIER_MODEL"
+   codex exec --model "$CODEX_FRONTIER_MODEL" --dangerously-bypass-approvals-and-sandbox \
      "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER>.
 
 Warning: A previous attempt did not complete. Point: <e.g. 'wrote files but did not commit'>.
@@ -1024,7 +1057,7 @@ Leave the parent in its current state. Add `needs-human-review` alongside `imple
 - **GitHub CLI**: `gh` authenticated with repo access
 - **Git**: Clean working directory
 - **Cross-runtime review**: Claude-hosted implementation requires a Codex frontier path; Codex-hosted implementation requires the Claude Code CLI with access to the latest Claude Opus through the `opus` alias. `--reviewer` is the only reviewer-routing override. `--model` and issue routing labels affect implementation only.
-- **Codex access**: `codex exec --model gpt-5.5` is preferred; a model-pinnable Codex MCP server or responsive Codex GitHub integration may be used if the CLI is unavailable. The Codex CLI is the only Codex method usable for implementation dispatch in Parent Mode.
+- **Codex access**: The `codex` CLI and `jq` must resolve the latest frontier slug from `codex debug models`; `codex exec --model "$CODEX_FRONTIER_MODEL"` is preferred, and a model-selectable Codex MCP server may be used after an inconclusive CLI review. The Codex CLI is the only Codex method usable for implementation dispatch in Parent Mode.
 - **Claude access**: The `claude` CLI must be on `PATH` and authenticated when a Codex implementation is automatically paired with the latest Claude Opus. Reviewer failure escalates to human review; it never falls back to the implementation model family.
 
 ## Linear API Cheat Sheet

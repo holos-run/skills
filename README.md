@@ -213,7 +213,7 @@ claude mcp add linear-server --scope user -- ~/.local/bin/linear-server
 The `implement-issue` skill runs adversarial code review on every PR (up to 2 fix rounds + a final gate check). By default it detects the runtime performing the primary implementation and selects the opposite model family:
 
 - Codex implementation → Claude Code CLI with `--model opus`, the alias for the latest Claude Opus model
-- Claude Code implementation → Codex with the frontier `gpt-5.5` model
+- Claude Code implementation → the latest Codex frontier model resolved from the current Codex model catalog
 
 The skill records the primary runtime before it launches a reviewer. Native host identity is authoritative; only an unidentified host consults environment markers such as `CODEX_THREAD_ID`. It never infers the runtime from `command -v`: both CLIs may be installed in the same environment.
 
@@ -234,7 +234,7 @@ An override that selects the implementation model family is allowed but called o
 - Every review reports `APPROVE` or `REQUEST_CHANGES` and uses `[CRITICAL]`, `[IMPORTANT]`, and `[STYLE]` findings.
 - A failed cross-runtime reviewer is retried once, then escalated to human review. It never falls back to the implementation model family.
 
-Codex review prefers `codex exec --model gpt-5.5`. A Codex MCP tool is eligible only when it can pin `gpt-5.5`; the GitHub Codex integration is the final Codex fallback. Codex-hosted implementation requires an authenticated `claude` CLI with access to its latest `opus` alias.
+Codex review resolves the visible model described as the latest frontier from `codex debug models`, then runs `codex exec --model "$CODEX_FRONTIER_MODEL"`. A Codex MCP tool is eligible only when it can use that resolved slug; the GitHub Codex integration is not used because its review trigger cannot accept the selected frontier model. Codex-hosted implementation requires an authenticated `claude` CLI with access to its latest `opus` alias.
 
 If the primary runtime cannot be identified, a fenced reviewer command in the target project's `CLAUDE.md` or `AGENTS.md` `## Code Review` section may be used. The command can reference `$PR_NUMBER`, `$BRANCH`, and `$REPO`:
 
@@ -242,7 +242,15 @@ If the primary runtime cannot be identified, a fenced reviewer command in the ta
 ## Code Review
 
 ```bash
-codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
+CODEX_FRONTIER_MODEL=$(codex debug models | jq -er '
+  [.models[]
+   | select(.visibility == "list")
+   | select(((.description // "") | ascii_downcase) | contains("latest frontier"))]
+  | sort_by(.priority)
+  | (.[0].slug // empty)
+')
+test -n "$CODEX_FRONTIER_MODEL"
+codex exec --model "$CODEX_FRONTIER_MODEL" --dangerously-bypass-approvals-and-sandbox \
   "Review PR #$PR_NUMBER on branch $BRANCH in $REPO."
 ```
 </pre>
