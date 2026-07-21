@@ -1,6 +1,6 @@
 ---
 name: implement-issue
-description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Workers inherit the session-configured model by default; override with a --model argument or issue routing labels. Code review uses the opposite model family from the primary implementation runtime (Claude Opus 4.8 reviews Codex; the Codex frontier model reviews Claude) and posts findings back to the PR; override the reviewer with --reviewer. Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
+description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Workers inherit the session-configured model by default; override with a --model argument or issue routing labels. Code review uses the opposite model family from the primary implementation runtime (the latest Claude Opus reviews Codex; the Codex frontier model reviews Claude) and posts findings back to the PR; override the reviewer with --reviewer. Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
 version: 2.14.0
 ---
 
@@ -8,7 +8,7 @@ version: 2.14.0
 
 Implement a Linear issue end-to-end. This skill self-detects whether the issue is a leaf issue (no children) or a parent issue (has children) and adapts its behavior:
 
-- **Leaf mode**: Branch, implement, open PR, run adversarial cross-runtime code review (Claude Opus 4.8 reviews Codex implementations; the Codex frontier model reviews Claude implementations; `--reviewer` explicitly overrides), post the review back to the PR as a comment, up to 2 fix rounds, wait for CI, merge, and mark Done.
+- **Leaf mode**: Branch, implement, open PR, run adversarial cross-runtime code review (the latest Claude Opus reviews Codex implementations; the Codex frontier model reviews Claude implementations; `--reviewer` explicitly overrides), post the review back to the PR as a comment, up to 2 fix rounds, wait for CI, merge, and mark Done.
 - **Parent mode**: Orchestrate implementation of all child issues — each worker inherits the session model by default, with `--model` argument or routing labels (`codex`, `fable`, `opus`, `sonnet`, `haiku`) overriding — then track results, sweep for follow-ups, and post a summary.
 
 Implement the Linear issue **{{SKILL_INPUT}}**.
@@ -25,7 +25,7 @@ Parse and record:
 
 - The issue reference (identifier or URL) — strip any flags before parsing it in step 1.
 - `MODEL_OVERRIDE` — the value of `--model <name>` (also accepted as `model=<name>`) if present; otherwise unset.
-- `REVIEWER_OVERRIDE` — the value of `--reviewer <name>` (also accepted as `reviewer=<name>`) if present; otherwise unset. Controls **only** the code reviewer selection in L8 — it never affects worker or orchestrator dispatch. `codex` selects the Codex frontier reviewer; `claude` or `opus` selects Claude Opus 4.8; `fable`/`sonnet`/`haiku` explicitly select that Claude model instead.
+- `REVIEWER_OVERRIDE` — the value of `--reviewer <name>` (also accepted as `reviewer=<name>`) if present; otherwise unset. Controls **only** the code reviewer selection in L8 — it never affects worker or orchestrator dispatch. `codex` selects the Codex frontier reviewer; `claude` or `opus` selects the latest Claude Opus through the `opus` alias; `fable`/`sonnet`/`haiku` explicitly select that Claude model instead.
 
 Every point in this skill that dispatches **implementation work** — sub-issue workers (P6), nested orchestrators (P8), and retry dispatches — resolves the model with this priority. Code review is deliberately independent: L8 uses `REVIEWER_OVERRIDE` when present and otherwise selects the opposite model family from the detected primary runtime. `MODEL_OVERRIDE` and routing labels never select the reviewer.
 
@@ -80,7 +80,7 @@ Each leaf worker detects its own runtime. Parent orchestrators do not force thei
 
 ## Claude Review Model Mapping
 
-When a Codex implementation is reviewed by Claude, always invoke Claude Code with the exact model `claude-opus-4-8`. Do not use the moving `opus` alias, the parent session model, or a lower-cost fallback. Run the Claude CLI in the foreground, bound it with `timeout`, and capture its final text before continuing.
+When a Codex implementation is reviewed by Claude, always invoke Claude Code with `--model opus`. Claude Code defines `opus` as the alias for the latest available Claude Opus model. Do not pin a version-specific Opus model, inherit the parent session model, or use a lower-cost fallback. Run the Claude CLI in the foreground, bound it with `timeout`, and capture its final text before continuing.
 
 ---
 
@@ -280,13 +280,13 @@ PR_NUMBER=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].nu
 
 **Reviewer selection (in priority order):**
 
-1. **`REVIEWER_OVERRIDE` is set** → honor it. `codex` selects the Codex frontier reviewer. `claude` or `opus` selects `claude-opus-4-8`. `fable`/`sonnet`/`haiku` selects that explicit Claude model.
-2. **`PRIMARY_RUNTIME=codex`** → select `claude-opus-4-8`.
+1. **`REVIEWER_OVERRIDE` is set** → honor it. `codex` selects the Codex frontier reviewer. `claude` or `opus` selects the latest Claude Opus through `--model opus`. `fable`/`sonnet`/`haiku` selects that explicit Claude model.
+2. **`PRIMARY_RUNTIME=codex`** → select the latest Claude Opus through `--model opus`.
 3. **`PRIMARY_RUNTIME=claude`** → select the Codex frontier reviewer (`gpt-5.5`).
 4. **`PRIMARY_RUNTIME=unknown` and project config contains a reviewer command** → use the fenced shell command from the project's `CLAUDE.md` or `AGENTS.md` `## Code Review` section.
 5. **`PRIMARY_RUNTIME=unknown` and no project reviewer exists** → post a `Code Review Cannot Proceed` comment, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`. Do not guess and risk same-runtime self-review.
 
-`MODEL_OVERRIDE` and issue routing labels control implementation dispatch only. They must not influence L8. This separation is what guarantees adversarial review when, for example, a `codex` label sends implementation to Codex: the resulting Codex leaf invocation detects itself and selects Claude Opus 4.8 for review.
+`MODEL_OVERRIDE` and issue routing labels control implementation dispatch only. They must not influence L8. This separation is what guarantees adversarial review when, for example, a `codex` label sends implementation to Codex: the resulting Codex leaf invocation detects itself and selects the latest Claude Opus for review.
 
 **Posting the review back to the PR (all reviewer paths).** Every review round must end with the reviewer's findings posted as a comment on the PR. For the Codex CLI, Codex MCP, project-configured, and Claude CLI paths, after parsing the output post it:
 
@@ -409,7 +409,7 @@ If found, that command is what L9 will run, with variables resolved from the she
 
 **Claude reviewer (`PRIMARY_RUNTIME=codex` by default, or selected via `--reviewer claude|opus|fable|sonnet|haiku`):**
 
-Resolve `CLAUDE_REVIEW_MODEL`: `claude` and `opus` both mean the exact model `claude-opus-4-8`; the other explicit reviewer values retain their names. For the automatic Codex-runtime route, it is always `claude-opus-4-8`.
+Resolve `CLAUDE_REVIEW_MODEL`: `claude` and `opus` both resolve to the moving `opus` alias; the other explicit reviewer values retain their names. For the automatic Codex-runtime route, it is always `opus`, ensuring each run uses the latest available Claude Opus model.
 
 Check availability:
 
@@ -441,7 +441,7 @@ Interpret the result deterministically:
 - **`CLAUDE_STATUS` is 0 and `$REVIEW_OUT` is non-empty:** parse that file for the verdict and findings and post it to the PR.
 - **`CLAUDE_STATUS` is nonzero or `$REVIEW_OUT` is empty:** rerun the exact foreground command once. If the rerun also fails, do not invoke Codex or inherit the session model. Post a `Code Review Cannot Proceed` comment, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`.
 
-For automatic Codex-runtime review, the PR comment header must identify `claude-opus-4-8`, not `claude session model`. This makes accidental regression to the behavior in the linked failure visible.
+For automatic Codex-runtime review, the PR comment header must identify `opus (latest Claude Opus)`, not `claude session model`. This makes accidental regression to the behavior in the linked failure visible without pinning a model version.
 
 ### L9. Round 1: Review and Fix
 
@@ -1023,9 +1023,9 @@ Leave the parent in its current state. Add `needs-human-review` alongside `imple
 - **Linear MCP**: `mcp__linear-server__*` tools configured
 - **GitHub CLI**: `gh` authenticated with repo access
 - **Git**: Clean working directory
-- **Cross-runtime review**: Claude-hosted implementation requires a Codex frontier path; Codex-hosted implementation requires the Claude Code CLI with access to `claude-opus-4-8`. `--reviewer` is the only reviewer-routing override. `--model` and issue routing labels affect implementation only.
+- **Cross-runtime review**: Claude-hosted implementation requires a Codex frontier path; Codex-hosted implementation requires the Claude Code CLI with access to the latest Claude Opus through the `opus` alias. `--reviewer` is the only reviewer-routing override. `--model` and issue routing labels affect implementation only.
 - **Codex access**: `codex exec --model gpt-5.5` is preferred; a model-pinnable Codex MCP server or responsive Codex GitHub integration may be used if the CLI is unavailable. The Codex CLI is the only Codex method usable for implementation dispatch in Parent Mode.
-- **Claude access**: The `claude` CLI must be on `PATH` and authenticated when a Codex implementation is automatically paired with Claude Opus 4.8. Reviewer failure escalates to human review; it never falls back to the implementation model family.
+- **Claude access**: The `claude` CLI must be on `PATH` and authenticated when a Codex implementation is automatically paired with the latest Claude Opus. Reviewer failure escalates to human review; it never falls back to the implementation model family.
 
 ## Linear API Cheat Sheet
 

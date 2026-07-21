@@ -212,7 +212,7 @@ claude mcp add linear-server --scope user -- ~/.local/bin/linear-server
 
 The `implement-issue` skill runs adversarial code review on every PR (up to 2 fix rounds + a final gate check). By default it detects the runtime performing the primary implementation and selects the opposite model family:
 
-- Codex implementation → Claude Code CLI with the exact `claude-opus-4-8` model
+- Codex implementation → Claude Code CLI with `--model opus`, the alias for the latest Claude Opus model
 - Claude Code implementation → Codex with the frontier `gpt-5.5` model
 
 The skill records the primary runtime before it launches a reviewer. Native host identity is authoritative; only an unidentified host consults environment markers such as `CODEX_THREAD_ID`. It never infers the runtime from `command -v`: both CLIs may be installed in the same environment.
@@ -224,7 +224,7 @@ The skill records the primary runtime before it launches a reviewer. Native host
 /linear-workflow:implement-issue APP-234 --reviewer opus
 ```
 
-`--reviewer claude` and `--reviewer opus` both pin `claude-opus-4-8`; `fable`, `sonnet`, and `haiku` remain explicit Claude reviewer choices.
+`--reviewer claude` and `--reviewer opus` both select the latest Claude Opus through the moving `opus` alias; `fable`, `sonnet`, and `haiku` remain explicit Claude reviewer choices.
 An override that selects the implementation model family is allowed but called out in the PR review comment as same-family review.
 
 ### Reviewer execution
@@ -234,7 +234,7 @@ An override that selects the implementation model family is allowed but called o
 - Every review reports `APPROVE` or `REQUEST_CHANGES` and uses `[CRITICAL]`, `[IMPORTANT]`, and `[STYLE]` findings.
 - A failed cross-runtime reviewer is retried once, then escalated to human review. It never falls back to the implementation model family.
 
-Codex review prefers `codex exec --model gpt-5.5`. A Codex MCP tool is eligible only when it can pin `gpt-5.5`; the GitHub Codex integration is the final Codex fallback. Codex-hosted implementation requires an authenticated `claude` CLI with access to `claude-opus-4-8`.
+Codex review prefers `codex exec --model gpt-5.5`. A Codex MCP tool is eligible only when it can pin `gpt-5.5`; the GitHub Codex integration is the final Codex fallback. Codex-hosted implementation requires an authenticated `claude` CLI with access to its latest `opus` alias.
 
 If the primary runtime cannot be identified, a fenced reviewer command in the target project's `CLAUDE.md` or `AGENTS.md` `## Code Review` section may be used. The command can reference `$PR_NUMBER`, `$BRANCH`, and `$REPO`:
 
