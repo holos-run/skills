@@ -210,99 +210,44 @@ claude mcp add linear-server --scope user -- ~/.local/bin/linear-server
 
 ## Configuring Code Review
 
-The `implement-issue` skill runs adversarial code review on every PR (up to 2 fix rounds + a final gate check). It looks for a review command in the target repo's `CLAUDE.md` or `AGENTS.md`. If none is found, it falls back to a Claude sub-agent review.
+The `implement-issue` skill runs adversarial code review on every PR (up to 2 fix rounds + a final gate check). By default it detects the runtime performing the primary implementation and selects the opposite model family:
 
-### How the skill resolves the review command
+- Codex implementation → Claude Code CLI with the exact `claude-opus-4-8` model
+- Claude Code implementation → Codex with the frontier `gpt-5.5` model
 
-1. Look in `CLAUDE.md` or `AGENTS.md` for a section headed `## Code Review`
-2. Find a fenced code block containing a shell command
-3. Substitute `$PR_NUMBER`, `$BRANCH`, and `$REPO` into the command
-4. Execute and parse stdout for: `APPROVE`, `REQUEST_CHANGES`, `[CRITICAL]`, `[IMPORTANT]`, `[STYLE]`
+The skill records the primary runtime before it launches a reviewer. Native host identity is authoritative; only an unidentified host consults environment markers such as `CODEX_THREAD_ID`. It never infers the runtime from `command -v`: both CLIs may be installed in the same environment.
 
-If no `## Code Review` section is found, the skill spawns a Claude sub-agent to
-review the PR diff. This works everywhere but is less adversarial than using a
-separate model.
+`--model` and issue routing labels affect implementation only. Use the dedicated `--reviewer` option when an explicit reviewer override is required:
 
-### Example: Codex CLI for adversarial review (recommended)
+```
+/linear-workflow:implement-issue APP-234 --reviewer codex
+/linear-workflow:implement-issue APP-234 --reviewer opus
+```
 
-Add this to your project's `CLAUDE.md`:
+`--reviewer claude` and `--reviewer opus` both pin `claude-opus-4-8`; `fable`, `sonnet`, and `haiku` remain explicit Claude reviewer choices.
+An override that selects the implementation model family is allowed but called out in the PR review comment as same-family review.
+
+### Reviewer execution
+
+- Both CLIs run in the foreground with a 10-minute bound per attempt.
+- The PR diff is supplied on stdin and final review text is captured before the workflow continues.
+- Every review reports `APPROVE` or `REQUEST_CHANGES` and uses `[CRITICAL]`, `[IMPORTANT]`, and `[STYLE]` findings.
+- A failed cross-runtime reviewer is retried once, then escalated to human review. It never falls back to the implementation model family.
+
+Codex review prefers `codex exec --model gpt-5.5`. A Codex MCP tool is eligible only when it can pin `gpt-5.5`; the GitHub Codex integration is the final Codex fallback. Codex-hosted implementation requires an authenticated `claude` CLI with access to `claude-opus-4-8`.
+
+If the primary runtime cannot be identified, a fenced reviewer command in the target project's `CLAUDE.md` or `AGENTS.md` `## Code Review` section may be used. The command can reference `$PR_NUMBER`, `$BRANCH`, and `$REPO`:
 
 <pre>
 ## Code Review
 
 ```bash
-codex --approval-mode full-auto --full-auto \
-  "Review PR #$PR_NUMBER on branch $BRANCH in $REPO. \
-   Focus on: security vulnerabilities, correctness bugs, error handling, \
-   race conditions, missing validation, and test coverage gaps. \
-   Report each finding on its own line as: \
-   [SEVERITY] file:line — description \
-   where SEVERITY is CRITICAL, IMPORTANT, or STYLE. \
-   At the end, state APPROVE or REQUEST_CHANGES."
+codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox \
+  "Review PR #$PR_NUMBER on branch $BRANCH in $REPO."
 ```
 </pre>
 
-This gives you true adversarial review — a separate model (Codex/GPT) reviewing
-code written by Claude, catching blind spots that self-review misses.
-
-#### Codex CLI setup
-
-Install:
-
-```bash
-npm install -g @openai/codex
-```
-
-Configure `~/.codex/config.toml` for your LLM provider (e.g., LiteLLM, OpenAI
-directly, Azure). See the [Codex CLI docs](https://github.com/openai/codex) for
-provider-specific configuration.
-
-The following example works with LiteLLM:
-
-```toml
-personality = "pragmatic"
-model = "gpt-5.3-codex"
-model_provider = "litellm"
-model_reasoning_effort = "medium"
-
-[notice.model_migrations]
-"gpt-5.3-codex" = "gpt-5.4"
-
-[model_providers.litellm]
-name = "LiteLLM"
-base_url = "https://litellm.example.com/v1"
-env_key = "LITELLM_API_KEY"
-wire_api = "responses"
-```
-
-### Example: Claude CLI for self-review
-
-If you don't have Codex but want explicit review configuration:
-
-<pre>
-## Code Review
-
-```bash
-claude --print "Review the diff of PR #$PR_NUMBER in $REPO. \
-  Run: gh pr diff $PR_NUMBER \
-  Report findings as [CRITICAL], [IMPORTANT], or [STYLE]. \
-  State APPROVE or REQUEST_CHANGES."
-```
-</pre>
-
-This is less adversarial (same model family reviewing its own code) but still
-provides structured review output.
-
-### Fallback behavior
-
-When no `## Code Review` section exists in the project, the skill spawns a Claude sub-agent that:
-
-1. Reads the PR diff via `gh pr diff $PR_NUMBER`
-2. Reviews every changed file
-3. Reports findings using `[CRITICAL]`, `[IMPORTANT]`, `[STYLE]` severity levels
-4. Returns `APPROVE` or `REQUEST_CHANGES`
-
-This ensures the review loop works out of the box in any repo, with the adversarial quality improving when you configure an external reviewer.
+Without an explicit project command, the skill escalates rather than guessing.
 
 ## How It Works
 
