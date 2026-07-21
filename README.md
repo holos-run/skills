@@ -229,12 +229,14 @@ An override that selects the implementation model family is allowed but called o
 
 ### Reviewer execution
 
-- Both CLIs run in the foreground with a 10-minute bound per attempt.
+- Both CLIs run in the foreground with a bounded `timeout` per attempt, chosen so `timeout` fires before any host-side kill and the exit status stays observable.
 - The PR diff is supplied on stdin and final review text is captured before the workflow continues.
 - Every review reports `APPROVE` or `REQUEST_CHANGES` and uses `[CRITICAL]`, `[IMPORTANT]`, and `[STYLE]` findings.
-- A failed cross-runtime reviewer is retried once, then escalated to human review. It never falls back to the implementation model family.
+- A failed cross-runtime reviewer is retried once, then escalated to human review. It never falls back to the implementation model family. The escalation comment carries the captured evidence — exit status, stderr tail, and result envelope — so the failure is diagnosable.
 
-Codex review resolves the visible model described as the latest frontier from `codex debug models`, then runs `codex exec --model "$CODEX_FRONTIER_MODEL"`. A Codex MCP tool is eligible only when it can use that resolved slug; the GitHub Codex integration is not used because its review trigger cannot accept the selected frontier model. Codex-hosted implementation requires an authenticated `claude` CLI with access to its latest `opus` alias.
+Codex review resolves the visible model described as the latest frontier from `codex debug models`, then runs `codex exec --model "$CODEX_FRONTIER_MODEL"`. A Codex MCP tool is eligible only when it can use that resolved slug; the GitHub Codex integration is not used because its review trigger cannot accept the selected frontier model.
+
+Claude review requires an authenticated `claude` CLI with access to its latest `opus` alias, plus `jq`. Before the first round the skill proves the CLI end-to-end with a cheap bounded probe (`claude --print --output-format json "Reply with exactly the word OK"`), catching auth, model-access, and network failures up front. Review rounds also run with `--output-format json` and capture stderr separately: the JSON result envelope makes success machine-checkable where an empty text stream is ambiguous.
 
 If the primary runtime cannot be identified, a fenced reviewer command in the target project's `CLAUDE.md` or `AGENTS.md` `## Code Review` section may be used. The command can reference `$PR_NUMBER`, `$BRANCH`, and `$REPO`:
 
