@@ -1,7 +1,8 @@
 ---
 name: tanstack-query-and-grid
-description: Implement or refactor TanStack Query and TanStack Table grid behavior in holos-console. Use for query hooks, query key factories, mutation invalidation, ResourceGrid toolbar/search/filter/sort URL state, keepPreviousData, server-state coordination, and grid list cache behavior. Do not use for Go backend changes, protobuf schema work, or unrelated visual design.
-version: 1.1.0
+description: v1.1.1 — Implement or refactor TanStack Query and TanStack Table grid behavior in holos-console. Use for query hooks, query key factories, mutation invalidation, ResourceGrid toolbar/search/filter/sort URL state, keepPreviousData, server-state coordination, and grid list cache behavior. Do not use for Go backend changes, protobuf schema work, or unrelated visual design.
+version: 1.1.1
+# Guardrail: whenever version changes, update the leading vX.Y.Z prefix in description in the same PR.
 ---
 
 # TanStack Query And Grid

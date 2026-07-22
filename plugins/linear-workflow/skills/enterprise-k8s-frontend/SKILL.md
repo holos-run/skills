@@ -1,7 +1,8 @@
 ---
 name: enterprise-k8s-frontend
-description: Build or refactor dense operator-facing Kubernetes frontend workflows in holos-console. Use for resource list/detail views, create/edit/delete flows, route-backed filters, ResourceGrid pages, selected organization/project context, and ConnectRPC-backed React UI work. Do not use for Go backend changes, protobuf API design, cluster runtime logic, infrastructure, or marketing pages.
-version: 1.1.0
+description: v1.1.1 — Build or refactor dense operator-facing Kubernetes frontend workflows in holos-console. Use for resource list/detail views, create/edit/delete flows, route-backed filters, ResourceGrid pages, selected organization/project context, and ConnectRPC-backed React UI work. Do not use for Go backend changes, protobuf API design, cluster runtime logic, infrastructure, or marketing pages.
+version: 1.1.1
+# Guardrail: whenever version changes, update the leading vX.Y.Z prefix in description in the same PR.
 ---
 
 # Enterprise Kubernetes Frontend
