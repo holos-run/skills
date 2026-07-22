@@ -998,12 +998,16 @@ Agent(
 If `PRIMARY_RUNTIME=codex`, spawn the worker as a `codex exec` subprocess — still the Codex harness. Resolve `WORKER_MODEL` as `MODEL_OVERRIDE` when set; otherwise, if the orchestrator knows the model its own session is running, use that; otherwise leave `WORKER_MODEL` unset and omit `--model` so the worker uses the Codex CLI's configured default (a fresh `codex exec` reads configuration — it cannot see a model selected interactively in the invoking session, so propagate the session model explicitly whenever it is known). Run it under the same foreground/completion-gate rules as every `codex exec` call in this skill:
 
 ```bash
-codex exec ${WORKER_MODEL:+--model "$WORKER_MODEL"} --dangerously-bypass-approvals-and-sandbox \
+set --
+[ -n "${WORKER_MODEL:-}" ] && set -- --model "$WORKER_MODEL"
+codex exec "$@" --dangerously-bypass-approvals-and-sandbox \
   "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER><propagated flags> to implement this
 sub-issue end-to-end. The skill handles branching, implementation, code review, CI, merge, and
 issue transitions. Run to completion. Return a short summary: result (MERGED |
 MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED), PR number, and any follow-up issue identifier."
 ```
+
+(The `set --` argument-list form keeps the optional `--model` flag as separate words in any POSIX shell — `${VAR:+...}` inline expansion is not portable to zsh, which would pass `--model <name>` as a single argument.)
 
 If `PRIMARY_RUNTIME=unknown`, dispatch through whatever native sub-agent mechanism the current harness provides — never launch a different harness's CLI to run implementation.
 
@@ -1054,9 +1058,11 @@ Use a retry loop with up to **3 total attempts** per sub-issue:
    )
    ```
 
-   If `PRIMARY_RUNTIME=codex` (resolve `WORKER_MODEL` exactly as in the initial P6 dispatch):
+   If `PRIMARY_RUNTIME=codex` (resolve `WORKER_MODEL` exactly as in the initial P6 dispatch, using the same portable `set --` form for the optional flag):
    ```bash
-   codex exec ${WORKER_MODEL:+--model "$WORKER_MODEL"} --dangerously-bypass-approvals-and-sandbox \
+   set --
+   [ -n "${WORKER_MODEL:-}" ] && set -- --model "$WORKER_MODEL"
+   codex exec "$@" --dangerously-bypass-approvals-and-sandbox \
      "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER><propagated flags>.
 
 Warning: A previous attempt did not complete. Point: <e.g. 'wrote files but did not commit'>.
@@ -1104,7 +1110,7 @@ After all original children are processed, re-list children via `mcp__linear-ser
 
 Compare against the original list. Any new open child is a follow-up created during review.
 
-Process follow-ups with the **full P6 pre-dispatch sequence** — including the *Pre-Dispatch: Detect and Discard Partial Work* step — then dispatch one worker per follow-up using the same same-harness dispatch rules.
+Process follow-ups with the **full P6 pre-dispatch sequence** — including the *Pre-Dispatch: Detect and Discard Partial Work* step — then dispatch one worker per follow-up using the same-harness dispatch rules from P6.
 
 ### P8. Nested Parent Issues
 

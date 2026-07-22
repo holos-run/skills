@@ -159,12 +159,12 @@ Call `mcp__linear-server__save_issue` with:
 - `team: "<TEAM_KEY>"`
 - `parentId: "<PRIMARY_ID>"`
 - `title: "<conventional-commit-prefix>(<scope>): <phase title>"`
-- `description`:
+- `description` (when `MODEL_OVERRIDE` is set, append ` --model <MODEL_OVERRIDE>` to the invocation in the `## Parent` section so the pin survives direct single-phase implementation; when unset, keep the bare invocation):
 
 ```markdown
 ## Parent
 
-Part of <PRIMARY_IDENTIFIER>
+Part of <PRIMARY_IDENTIFIER>. To implement this phase directly, invoke `/linear-workflow:implement-issue <PHASE_IDENTIFIER>`.
 
 ## Goal
 
@@ -254,7 +254,7 @@ After all issues are created, report a summary:
 - Each phase sub-issue identifier, title, and URL
 - Brief note on sequencing rationale
 - Model pin: the `--model <MODEL_OVERRIDE>` flag recorded in the implementation instructions (if any), or a note that implementation will inherit the session-configured model
-- Reminder: use `/linear-workflow:implement-issue <PRIMARY_IDENTIFIER>` to execute the full plan
+- Reminder: use `/linear-workflow:implement-issue <PRIMARY_IDENTIFIER>` to execute the full plan — append ` --model <MODEL_OVERRIDE>` to this reminder when `MODEL_OVERRIDE` is set, so the documented handoff preserves the pin
 
 ## Key Principles
 
