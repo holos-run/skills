@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end, either as one leaf issue or as a parent orchestrating children. Implementation routing inherits the session model unless --model or issue labels override it. Cross-runtime review posts findings to the PR; reviewer-output failures stop the merge and produce redacted diagnostics plus a best-effort related Linear issue and document. Use --reviewer only to override reviewer selection. Triggers when the user provides a Linear issue URL or identifier (for example PLA-287) and asks to implement, work on, fix, resolve, or execute its plan.
-version: 2.16.3
+version: 2.16.4
 ---
 
 # Implement Issue
@@ -590,7 +590,7 @@ Then rerun the exact foreground command once. If the rerun is also inconclusive,
 ```markdown
 ## Code Review Cannot Proceed
 
-This Codex implementation requires review by the latest Claude Opus model (\`--model $CLAUDE_REVIEW_MODEL\`). The reviewer cannot silently downgrade to Codex because that would be same-family self-review. Marking for human review.
+This Codex implementation requires review by the latest Claude Opus model (`--model $CLAUDE_REVIEW_MODEL`). The reviewer cannot silently downgrade to Codex because that would be same-family self-review. Marking for human review.
 
 Evidence:
 - Failure point: <probe | review round N attempt M>
