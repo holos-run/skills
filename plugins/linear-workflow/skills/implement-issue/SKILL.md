@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end, either as one leaf issue or as a parent orchestrating children. Implementation routing inherits the session model unless --model or issue labels override it. Cross-runtime review posts findings to the PR; reviewer-output failures stop the merge and produce redacted diagnostics plus a best-effort related Linear issue and document. Use --reviewer only to override reviewer selection. Triggers when the user provides a Linear issue URL or identifier (for example PLA-287) and asks to implement, work on, fix, resolve, or execute its plan.
-version: 2.16.1
+version: 2.16.2
 ---
 
 # Implement Issue
@@ -342,7 +342,7 @@ If `REVIEWER_OVERRIDE` deliberately selects the same model family as `PRIMARY_RU
 
    Capture the document URL, slug, or ID as `ESCALATION_DOCUMENT_REFERENCE`; when the returned reference is linkable, make one best-effort `mcp__linear-server__save_issue` call to update the escalation issue description's document pointer with that link. A failed description update is recorded in `ESCALATION_LINEAR_ERRORS` and never halts the flow. Then post a comment on the original issue identified by `ISSUE_IDENTIFIER`, linking `ESCALATION_ISSUE_IDENTIFIER` and the attached document. If document creation fails, still post a comment linking the escalation issue and state that document attachment failed.
 
-5. **Degrade gracefully.** Treat every Linear create, document, description-update, or comment call in steps 3–4 as a single best-effort attempt. If issue creation fails, do not attempt document creation; append the failure to `ESCALATION_LINEAR_ERRORS` and continue. If document creation, the description update, or the linking comment fails, append that failure and continue. Never retry indefinitely or let this flow prevent the existing PR-comment and label escalation. Apply `needs-human-review` to the PR and the original Linear issue identified by `ISSUE_IDENTIFIER`, remove temporary reviewer artifacts, and skip to L16 with result `ESCALATED`; L16 reports any created escalation issue and every best-effort failure.
+5. **Degrade gracefully.** Treat every Linear create, document, description-update, or comment call in steps 3–4 as a single best-effort attempt. If issue creation fails, do not attempt document creation; append the failure to `ESCALATION_LINEAR_ERRORS` and continue. If document creation, the description update, or the linking comment fails, append that failure and continue. Never retry indefinitely or let this flow prevent the existing PR-comment and label escalation. Apply `needs-human-review` to the PR and to `ISSUE_IDENTIFIER` (the original Linear issue), remove temporary reviewer artifacts, and skip to L16 with result `ESCALATED`; L16 reports any created escalation issue and every best-effort failure.
 
 **Codex frontier reviewer (`PRIMARY_RUNTIME=claude` by default, or selected via `--reviewer codex`):**
 
@@ -433,21 +433,18 @@ Interpret the completed result deterministically — never re-run merely to "che
 
 Do not use `@codex review` as a fallback for this route because the GitHub integration does not accept the dynamically resolved frontier slug.
 
-**If both methods fail:** do not fall back to Claude. Surface an explicit error and escalate now (do not proceed to L9–L11). Run the shared **Escalation debug capture** flow exactly once with `REVIEWER_PATH` identifying the Codex CLI and MCP qualification path, `REVIEWER_MODEL="$CODEX_FRONTIER_MODEL"` (or `unresolved`), and evidence from both completed CLI attempts plus the MCP availability/qualification result. Use the following path-specific PR-comment template in step 2:
+**If both methods fail:** do not fall back to Claude. Surface an explicit error and escalate now (do not proceed to L9–L11). Run the shared **Escalation debug capture** flow exactly once with `REVIEWER_PATH` identifying the Codex CLI and MCP qualification path, `REVIEWER_MODEL="$CODEX_FRONTIER_MODEL"` (or `unresolved`), and evidence from both completed CLI attempts plus the MCP availability/qualification result. Use the following path-specific PR-comment body in step 2, replacing each placeholder with compact, redacted evidence from the completed attempts:
 
-```bash
-gh pr comment $PR_NUMBER --body "$(cat <<'EOF'
+```markdown
 ## Code Review Cannot Proceed
 
 This implementation is routed to the latest Codex frontier reviewer, but no qualifying invocation method is available: the current frontier slug could not be resolved from `codex debug models`, `codex exec --model "$CODEX_FRONTIER_MODEL"` was inconclusive, or no connected Codex MCP tool could use the resolved frontier slug. The reviewer cannot silently downgrade to Claude because that may be the implementation model. Marking for human review.
 
 Evidence:
 - Failure point: <frontier resolution | CLI attempt 1 | CLI attempt 2 | MCP qualification or invocation>
-- CLI attempts: <CODEX_STATUS, connector session and exit evidence, output and stderr byte counts>
-- MCP result: <availability, explicit-model qualification, invocation status, and result excerpt>
+- Statuses: <CODEX_STATUS values and MCP availability / explicit-model qualification / invocation status>
 - stderr tails (last 20 lines each, redacted): <captured tails, or "empty">
-EOF
-)"
+- Result excerpt (truncated, redacted): <CLI output and MCP result excerpts, or "unparseable">
 ```
 
 The shared flow attempts the related escalation issue and debug document, applies the PR and Linear labels, and skips directly to L16 with result `ESCALATED` even if its Linear creates fail.
