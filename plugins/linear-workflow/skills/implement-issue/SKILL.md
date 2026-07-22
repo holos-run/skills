@@ -33,7 +33,7 @@ Parse and record:
 Every point in this skill that dispatches **implementation work** — sub-issue workers (P6), nested orchestrators (P8), and retry dispatches — resolves the model with this priority. Code review is deliberately independent: L8 uses `REVIEWER_OVERRIDE` when present and otherwise selects the opposite model family from the detected primary runtime. `MODEL_OVERRIDE` never selects the reviewer.
 
 1. **`MODEL_OVERRIDE`** — the `--model` argument always wins.
-2. **Session default** — no override: spawn the worker **without a model parameter** so it inherits the model configured for the current session (e.g., Fable or Opus in a Claude Code remote session, or the Codex CLI's configured default). This is the normal path — never hardcode a fallback model.
+2. **Session default** — no override: the worker runs on the invoking session's model. In Claude Code, spawn the sub-agent **without a `model` parameter** so it inherits the session model (e.g., Fable or Opus in remote mode). In Codex, pass the session's own model explicitly when known (a fresh `codex exec` cannot see it otherwise), and only fall back to omitting `--model` — the Codex configured default — when it is not. This is the normal path — never hardcode a fallback model.
 
 Issue labels never influence dispatch. Do not read, match, or honor any label (`codex`, `fable`, `opus`, `sonnet`, `haiku`, or otherwise) as a routing signal — implementation routing comes only from `MODEL_OVERRIDE` and the session default, and the harness is always the one the user invoked.
 
@@ -980,27 +980,29 @@ If partial work exists (`SUB_BRANCH` or `SUB_OPEN_PR` is non-empty):
 
 **Dispatch per sub-issue** — always a sub-agent of the orchestrator's own harness, with the model from the "Arguments and Model Selection" resolution (`MODEL_OVERRIDE` if set, else the session default). Issue labels play no part. Never dispatch implementation to a different harness than the one the user invoked.
 
-If `PRIMARY_RUNTIME=claude`, spawn a Claude Code sub-agent. Append ` --model <MODEL_OVERRIDE>` to the skill invocation only when `MODEL_OVERRIDE` is set:
+In every worker template below (both harnesses, initial dispatch and retries), the skill invocation inside the prompt must propagate the overrides per "Arguments and Model Selection": append ` --model <MODEL_OVERRIDE>` when `MODEL_OVERRIDE` is set and ` --reviewer <REVIEWER_OVERRIDE>` when `REVIEWER_OVERRIDE` is set. CLI-level flags on `codex exec` do not reach the child skill's argument parsing — only flags written into the `/linear-workflow:implement-issue` invocation text do.
+
+If `PRIMARY_RUNTIME=claude`, spawn a Claude Code sub-agent:
 
 ```
 Agent(
   description: "Implement <SUB_IDENTIFIER>",
   model: "<RESOLVED_MODEL — omit entirely for the session default>",
-  prompt: "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER> to implement this sub-issue
-  end-to-end. The skill handles branching, implementation, code review, CI, merge, and issue
-  transitions. Run to completion. Return a short summary: result (MERGED |
+  prompt: "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER><propagated flags> to implement
+  this sub-issue end-to-end. The skill handles branching, implementation, code review, CI, merge,
+  and issue transitions. Run to completion. Return a short summary: result (MERGED |
   MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED), PR number, and any follow-up issue identifier."
 )
 ```
 
-If `PRIMARY_RUNTIME=codex`, spawn the worker as a `codex exec` subprocess — still the Codex harness. Pass `--model "$MODEL_OVERRIDE"` only when `MODEL_OVERRIDE` is set; otherwise omit `--model` so the worker inherits the Codex session's configured default model. Run it under the same foreground/completion-gate rules as every `codex exec` call in this skill:
+If `PRIMARY_RUNTIME=codex`, spawn the worker as a `codex exec` subprocess — still the Codex harness. Resolve `WORKER_MODEL` as `MODEL_OVERRIDE` when set; otherwise, if the orchestrator knows the model its own session is running, use that; otherwise leave `WORKER_MODEL` unset and omit `--model` so the worker uses the Codex CLI's configured default (a fresh `codex exec` reads configuration — it cannot see a model selected interactively in the invoking session, so propagate the session model explicitly whenever it is known). Run it under the same foreground/completion-gate rules as every `codex exec` call in this skill:
 
 ```bash
-codex exec ${MODEL_OVERRIDE:+--model "$MODEL_OVERRIDE"} --dangerously-bypass-approvals-and-sandbox \
-  "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER> to implement this sub-issue end-to-end.
-The skill handles branching, implementation, code review, CI, merge, and issue transitions.
-Run to completion. Return a short summary: result (MERGED | MERGED_WITH_DEFERRED_ACS |
-ESCALATED | FAILED), PR number, and any follow-up issue identifier."
+codex exec ${WORKER_MODEL:+--model "$WORKER_MODEL"} --dangerously-bypass-approvals-and-sandbox \
+  "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER><propagated flags> to implement this
+sub-issue end-to-end. The skill handles branching, implementation, code review, CI, merge, and
+issue transitions. Run to completion. Return a short summary: result (MERGED |
+MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED), PR number, and any follow-up issue identifier."
 ```
 
 If `PRIMARY_RUNTIME=unknown`, dispatch through whatever native sub-agent mechanism the current harness provides — never launch a different harness's CLI to run implementation.
@@ -1044,7 +1046,7 @@ Use a retry loop with up to **3 total attempts** per sub-issue:
    Agent(
      description: "Implement <SUB_IDENTIFIER> (retry <N>)",
      model: "<RESOLVED_MODEL — omit entirely for the session default>",
-     prompt: "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER>.
+     prompt: "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER><propagated flags>.
 
      Warning: A previous attempt did not complete. Point: <e.g. 'wrote files but did not commit'>. Reason: <e.g. 'worker returned without a result summary'>.
 
@@ -1052,10 +1054,10 @@ Use a retry loop with up to **3 total attempts** per sub-issue:
    )
    ```
 
-   If `PRIMARY_RUNTIME=codex`:
+   If `PRIMARY_RUNTIME=codex` (resolve `WORKER_MODEL` exactly as in the initial P6 dispatch):
    ```bash
-   codex exec ${MODEL_OVERRIDE:+--model "$MODEL_OVERRIDE"} --dangerously-bypass-approvals-and-sandbox \
-     "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER>.
+   codex exec ${WORKER_MODEL:+--model "$WORKER_MODEL"} --dangerously-bypass-approvals-and-sandbox \
+     "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER><propagated flags>.
 
 Warning: A previous attempt did not complete. Point: <e.g. 'wrote files but did not commit'>.
 Reason: <e.g. 'worker returned without a result summary'>.
