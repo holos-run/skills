@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: Implement a Linear issue end-to-end, either as one leaf issue or as a parent orchestrating children. Implementation routing inherits the session model unless --model or issue labels override it. Cross-runtime review posts findings to the PR; reviewer-output failures stop the merge and produce redacted diagnostics plus a best-effort related Linear issue and document. Use --reviewer only to override reviewer selection. Triggers when the user provides a Linear issue URL or identifier (for example PLA-287) and asks to implement, work on, fix, resolve, or execute its plan.
-version: 2.16.2
+version: 2.16.3
 ---
 
 # Implement Issue
@@ -322,7 +322,7 @@ If `REVIEWER_OVERRIDE` deliberately selects the same model family as `PRIMARY_RU
 
    Apply the same publication-safety rules required by the escalation PR comment below to the entire bundle: truncate every stderr tail to its last 20 lines, cap each result-envelope excerpt at approximately 2000 characters, and redact API keys, bearer tokens, `sk-` / `ghp_`-style secrets, URLs with embedded credentials, and other credential-shaped strings. Preserve exact commands only after applying those redactions. The full PR diff is evidence only by byte count; do not embed its contents in the Linear document.
 
-2. **Post the existing path-specific PR escalation comment.** Render the caller's `Code Review Cannot Proceed` body with compact, redacted evidence from the completed attempts as `ESCALATION_COMMENT`, then post it with the shared bounded invocation:
+2. **Post the existing path-specific PR escalation comment.** Render the caller's `Code Review Cannot Proceed` body with the compact, redacted attempt evidence that is available as `ESCALATION_COMMENT`, then post it with the shared bounded invocation:
 
    ```bash
    timeout --kill-after=10 60 gh pr comment "$PR_NUMBER" --body "$ESCALATION_COMMENT"
@@ -487,7 +487,23 @@ codex exec --model "$CODEX_FRONTIER_MODEL" --dangerously-bypass-approvals-and-sa
 
 If found, that command is what L9 will run, with variables resolved from the shell.
 
-Apply the same completion gate and final-line verdict requirement used by the CLI reviewers. If the configured command completes with empty review text or without a conclusive final verdict, record its exact expanded command, connector session and exit evidence, timestamps, stdout/stderr byte counts, and redacted stderr tail, then rerun that exact command once. If the rerun is also inconclusive, run the shared **Escalation debug capture** flow exactly once with `REVIEWER_PATH=project-configured`, the configured model if determinable (otherwise `unknown`), both attempts' evidence, and a `Code Review Cannot Proceed` PR-comment body stating that the configured reviewer returned no usable output. Do not substitute another reviewer. The shared flow applies the labels and skips to L16 with result `ESCALATED`, even if creating the related issue or document fails.
+Apply the same completion gate and final-line verdict requirement used by the CLI reviewers. If the configured command completes with empty review text or without a conclusive final verdict, record its exact expanded command, connector session and exit evidence, timestamps, stdout/stderr byte counts, and redacted stderr tail, then rerun that exact command once. If the rerun is also inconclusive, run the shared **Escalation debug capture** flow exactly once with `REVIEWER_PATH=project-configured`, the configured model if determinable (otherwise `unknown`), and both attempts' evidence. Use this path-specific PR-comment body in step 2, replacing each placeholder with compact, redacted evidence:
+
+```markdown
+## Code Review Cannot Proceed
+
+The project-configured reviewer completed twice without producing usable review output or a conclusive final verdict. Substituting another reviewer could violate the configured cross-runtime review policy. Marking for human review.
+
+Evidence:
+- Failure point: <project-configured review round N, attempts 1 and 2>
+- Command: <exact expanded command, redacted>
+- Statuses: <connector session / exit status and completion-gate evidence for each attempt>
+- Output sizes: <stdout and stderr byte counts for each attempt>
+- stderr tails (last 20 lines each, redacted): <captured tails, or "empty">
+- Result excerpts (truncated, redacted): <review output excerpts, or "empty">
+```
+
+Do not substitute another reviewer. The shared flow applies the labels and skips to L16 with result `ESCALATED`, even if creating the related issue or document fails.
 
 **Claude reviewer (`PRIMARY_RUNTIME=codex` by default, or selected via `--reviewer claude|opus|fable|sonnet|haiku`):**
 
