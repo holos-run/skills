@@ -322,7 +322,14 @@ If `REVIEWER_OVERRIDE` deliberately selects the same model family as `PRIMARY_RU
 
    Apply the same publication-safety rules required by the escalation PR comment below to the entire bundle: truncate every stderr tail to its last 20 lines, cap each result-envelope excerpt at approximately 2000 characters, and redact API keys, bearer tokens, `sk-` / `ghp_`-style secrets, URLs with embedded credentials, and other credential-shaped strings. Preserve exact commands only after applying those redactions. The full PR diff is evidence only by byte count; do not embed its contents in the Linear document.
 
-2. **Post the existing path-specific PR escalation comment.** Render and run the caller's `Code Review Cannot Proceed` template with compact, redacted evidence from the completed attempts. Keep the network call bounded. If it fails, append the status to `ESCALATION_LINEAR_ERRORS` and continue.
+2. **Post the existing path-specific PR escalation comment.** Render the caller's `Code Review Cannot Proceed` body with compact, redacted evidence from the completed attempts as `ESCALATION_COMMENT`, then post it with the shared bounded invocation:
+
+   ```bash
+   timeout --kill-after=10 60 gh pr comment "$PR_NUMBER" --body "$ESCALATION_COMMENT"
+   COMMENT_STATUS=$?
+   ```
+
+   If it fails, append `COMMENT_STATUS` to `ESCALATION_LINEAR_ERRORS` and continue.
 
 3. **Attempt to create the related escalation issue.** Ensure `needs-human-review` exists for `TEAM_KEY`, then call `mcp__linear-server__save_issue` with:
 
