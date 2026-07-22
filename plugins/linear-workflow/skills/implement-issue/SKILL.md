@@ -1,7 +1,7 @@
 ---
 name: implement-issue
-description: v2.16.5 — Implement a Linear issue end-to-end, either as one leaf issue or as a parent orchestrating children. Implementation routing inherits the session model unless --model or issue labels override it. Cross-runtime review posts findings to the PR; reviewer-output failures stop the merge and produce redacted diagnostics plus a best-effort related Linear issue and document. Use --reviewer only to override reviewer selection. Triggers when the user provides a Linear issue URL or identifier (for example PLA-287) and asks to implement, work on, fix, resolve, or execute its plan.
-version: 2.16.5
+description: v3.0.0 — Implement a Linear issue end-to-end, either as one leaf issue or as a parent orchestrating children. All implementation work — orchestrator and sub-issue workers alike — runs in the harness the user invoked; --model adjusts only the model within that harness, and only code review crosses to the opposite harness. Cross-runtime review posts findings to the PR; reviewer-output failures stop the merge and produce redacted diagnostics plus a best-effort related Linear issue and document. Use --reviewer only to override reviewer selection. Triggers when the user provides a Linear issue URL or identifier (for example PLA-287) and asks to implement, work on, fix, resolve, or execute its plan.
+version: 3.0.0
 # Guardrail: whenever version changes, update the leading vX.Y.Z prefix in description in the same PR.
 ---
 
@@ -10,7 +10,9 @@ version: 2.16.5
 Implement a Linear issue end-to-end. This skill self-detects whether the issue is a leaf issue (no children) or a parent issue (has children) and adapts its behavior:
 
 - **Leaf mode**: Branch, implement, open PR, run adversarial cross-runtime code review (the latest Claude Opus reviews Codex implementations; the Codex frontier model reviews Claude implementations; `--reviewer` explicitly overrides), post the review back to the PR as a comment, and allow up to 2 fix rounds. If an invoked reviewer produces no usable output, capture diagnostics, attempt the related Linear issue and document, and stop for human review without merging; otherwise wait for CI, merge, and mark Done.
-- **Parent mode**: Orchestrate implementation of all child issues — each worker inherits the session model by default, with `--model` argument or routing labels (`codex`, `fable`, `opus`, `sonnet`, `haiku`) overriding — then track results, sweep for follow-ups, and post a summary.
+- **Parent mode**: Orchestrate implementation of all child issues — each worker runs as a sub-agent of the same harness the orchestrator runs in, inheriting the session model unless the `--model` argument overrides it — then track results, sweep for follow-ups, and post a summary.
+
+**The harness never changes for implementation.** The orchestrator always runs in the top-level harness the user invoked, and every sub-issue worker is a sub-agent of that same harness. If the user starts in Codex, all implementation runs in Codex; if the user starts in Claude Code, all implementation runs in Claude Code. The only cross-harness dispatch this skill ever performs is adversarial code review.
 
 Implement the Linear issue **{{SKILL_INPUT}}**.
 
@@ -19,24 +21,25 @@ Implement the Linear issue **{{SKILL_INPUT}}**.
 `{{SKILL_INPUT}}` contains the issue reference and optional flags:
 
 ```
-<issue> [--model <fable|opus|sonnet|haiku|codex>] [--reviewer <codex|claude|fable|opus|sonnet|haiku>]
+<issue> [--model <name>] [--reviewer <codex|claude|fable|opus|sonnet|haiku>]
 ```
 
 Parse and record:
 
 - The issue reference (identifier or URL) — strip any flags before parsing it in step 1.
-- `MODEL_OVERRIDE` — the value of `--model <name>` (also accepted as `model=<name>`) if present; otherwise unset.
+- `MODEL_OVERRIDE` — the value of `--model <name>` (also accepted as `model=<name>`) if present; otherwise unset. The name must be one the **current harness** understands for its own sub-agents (e.g., `fable`/`opus`/`sonnet`/`haiku` in Claude Code; a Codex model slug in Codex). `--model` selects a model **within** the invoking harness — it never selects a harness.
 - `REVIEWER_OVERRIDE` — the value of `--reviewer <name>` (also accepted as `reviewer=<name>`) if present; otherwise unset. Controls **only** the code reviewer selection in L8 — it never affects worker or orchestrator dispatch. `codex` selects the Codex frontier reviewer; `claude` or `opus` selects the latest Claude Opus through the `opus` alias; `fable`/`sonnet`/`haiku` explicitly select that Claude model instead.
 
-Every point in this skill that dispatches **implementation work** — sub-issue workers (P6), nested orchestrators (P8), and retry dispatches — resolves the model with this priority. Code review is deliberately independent: L8 uses `REVIEWER_OVERRIDE` when present and otherwise selects the opposite model family from the detected primary runtime. `MODEL_OVERRIDE` and routing labels never select the reviewer.
+Every point in this skill that dispatches **implementation work** — sub-issue workers (P6), nested orchestrators (P8), and retry dispatches — resolves the model with this priority. Code review is deliberately independent: L8 uses `REVIEWER_OVERRIDE` when present and otherwise selects the opposite model family from the detected primary runtime. `MODEL_OVERRIDE` never selects the reviewer.
 
-1. **`MODEL_OVERRIDE`** — the `--model` argument always wins, over routing labels and project config alike.
-2. **Issue routing label** — lowercase the issue's label names and match `codex`, `fable`, `opus`, `sonnet`, or `haiku`. If multiple are present, prefer `codex` > `fable` > `opus` > `sonnet` > `haiku`.
-3. **Session default** — no override and no routing label: spawn the Claude sub-agent **without a `model` parameter** so it inherits the model configured for the Claude Code session (e.g., Fable or Opus in remote mode). This is the normal path — never hardcode a fallback model.
+1. **`MODEL_OVERRIDE`** — the `--model` argument always wins.
+2. **Session default** — no override: the worker runs on the invoking session's model. In Claude Code, spawn the sub-agent **without a `model` parameter** so it inherits the session model (e.g., Fable or Opus in remote mode). In Codex, pass the session's own model explicitly when known (a fresh `codex exec` cannot see it otherwise), and only fall back to omitting `--model` — the Codex configured default — when it is not. This is the normal path — never hardcode a fallback model.
 
-A resolution of `codex` dispatches via the Codex CLI; any other resolved name is passed verbatim as the `Agent()` `model` parameter. In the `Agent()` templates below, `model: "<RESOLVED_MODEL>"` means: pass the resolved name when priority 1 or 2 produced one, and **omit the `model` parameter entirely** when resolution fell through to the session default.
+Issue labels never influence dispatch. Do not read, match, or honor any label (`codex`, `fable`, `opus`, `sonnet`, `haiku`, or otherwise) as a routing signal — implementation routing comes only from `MODEL_OVERRIDE` and the session default, and the harness is always the one the user invoked.
 
-When this skill re-invokes itself for a sub-issue or nested parent, propagate `MODEL_OVERRIDE` and `REVIEWER_OVERRIDE` in the invocation when set: `/linear-workflow:implement-issue <SUB_IDENTIFIER> --model <name> --reviewer <name>` (include each flag only when its override is set). Routing labels need no propagation — each worker reads its own issue's labels.
+Workers are always dispatched through the current harness's native sub-agent mechanism: in Claude Code, the `Agent()` tool; in Codex, a `codex exec` subprocess (still the Codex harness). In the worker templates below, `model: "<RESOLVED_MODEL>"` means: pass `MODEL_OVERRIDE` when set, and **omit the model parameter entirely** when resolution fell through to the session default.
+
+When this skill re-invokes itself for a sub-issue or nested parent, propagate `MODEL_OVERRIDE` and `REVIEWER_OVERRIDE` in the invocation when set: `/linear-workflow:implement-issue <SUB_IDENTIFIER> --model <name> --reviewer <name>` (include each flag only when its override is set).
 
 ## Linear Conventions
 
@@ -56,7 +59,7 @@ This skill runs inside a git worktree created by an agent harness — a Claude C
 
 ## Codex Frontier Model Resolution
 
-Before this skill invokes `codex exec` for review or implementation, resolve `CODEX_FRONTIER_MODEL` once from the current Codex model catalog. Select the visible model whose description identifies it as the latest frontier model, preferring the lowest numeric priority:
+Before this skill invokes `codex exec` for **code review**, resolve `CODEX_FRONTIER_MODEL` once from the current Codex model catalog. (Implementation workers in a Codex harness do not use this resolution — they inherit the session default or `MODEL_OVERRIDE` per "Arguments and Model Selection".) Select the visible model whose description identifies it as the latest frontier model, preferring the lowest numeric priority:
 
 ```bash
 CODEX_FRONTIER_MODEL=$(codex debug models | jq -er '
@@ -68,7 +71,7 @@ CODEX_FRONTIER_MODEL=$(codex debug models | jq -er '
 ')
 ```
 
-Require a non-empty result and pass `--model "$CODEX_FRONTIER_MODEL"` to every `codex exec` call. Resolve from the catalog at runtime instead of hardcoding a versioned model slug or inheriting a possibly stale configured default. If the frontier model cannot be resolved, treat the Codex CLI route as unavailable.
+Require a non-empty result and pass `--model "$CODEX_FRONTIER_MODEL"` to every review `codex exec` call. Resolve from the catalog at runtime instead of hardcoding a versioned model slug or inheriting a possibly stale configured default. If the frontier model cannot be resolved, treat the Codex CLI review route as unavailable.
 
 **Always run `codex exec` in the foreground and define completion by an observed exit status.** A host execution tool may yield a live connector session before the foreground process exits: a result with an exit code is complete, while a result with a session handle (for example, `session_id`) and no exit code is still running. In the latter case, wait on that exact handle with the connector-native stdin/wait operation until it reports an exit code; do not restart the command. If an outer orchestration call itself yields a `cell_id`, resume that cell with its own wait operation and let it continue waiting on the shell session — never restart either layer. Waiting this way preserves the same foreground execution and is not backgrounding, process-table polling, or a second attempt. Never background the process (no `run_in_background`, `&`, or `disown`) and never poll `ps`/`pgrep`/`jobs`/`/proc` to detect completion: process-table greps match the agent's own shell or the `grep` itself and deadlock the session until the harness force-recovers it. Bound long calls with `timeout`, and allow enough cumulative connector wait time to observe that inner timeout's exit status. The L8 Codex CLI reviewer (Method 1) applies this in full detail.
 
@@ -85,7 +88,7 @@ At the start of the skill, before dispatching any implementation or review worke
 
 The primary runtime is the agent that performs the implementation steps in this invocation, not a CLI binary it later launches. **Never detect the runtime with `command -v codex` or `command -v claude`**: both CLIs can be installed in either host. Detect once and do not recompute inside a review subprocess, because child processes can inherit the primary host's environment markers. In particular, a native Claude host launched beneath Codex remains `claude` even if it inherited `CODEX_THREAD_ID`.
 
-Each leaf worker detects its own runtime. Parent orchestrators do not force their `PRIMARY_RUNTIME` onto child invocations; the worker selected in P6 becomes that child's primary implementation runtime.
+Each leaf worker detects its own runtime. Because P6 always dispatches workers as sub-agents of the orchestrator's own harness, every worker's detection yields the same runtime as the orchestrator's — which is exactly what guarantees that L8's cross-runtime review pairing is adversarial for the whole tree.
 
 ## Claude Review Model Mapping
 
@@ -295,7 +298,7 @@ PR_NUMBER=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].nu
 4. **`PRIMARY_RUNTIME=unknown` and project config contains a reviewer command** → use the fenced shell command from the project's `CLAUDE.md` or `AGENTS.md` `## Code Review` section.
 5. **`PRIMARY_RUNTIME=unknown` and no project reviewer exists** → post a `Code Review Cannot Proceed` comment, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`. Do not guess and risk same-runtime self-review. Do not run the reviewer-output debug-capture flow below: no reviewer was invoked, so there is no attempt evidence to capture.
 
-`MODEL_OVERRIDE` and issue routing labels control implementation dispatch only. They must not influence L8. This separation is what guarantees adversarial review when, for example, a `codex` label sends implementation to Codex: the resulting Codex leaf invocation detects itself and selects the latest Claude Opus for review.
+`MODEL_OVERRIDE` controls implementation dispatch only. It must not influence L8. Because implementation always runs in the harness the user invoked, `PRIMARY_RUNTIME` reliably identifies the implementation family, and selecting the opposite family here is what guarantees adversarial review: a Codex-invoked implementation is reviewed by the latest Claude Opus, and a Claude-invoked implementation is reviewed by the Codex frontier model.
 
 **Posting the review back to the PR (all reviewer paths).** Every review round must end with the reviewer's findings posted as a comment on the PR. For the Codex CLI, Codex MCP, project-configured, and Claude CLI paths, after parsing the output post it:
 
@@ -783,7 +786,7 @@ Call `mcp__linear-server__save_comment` with `issue: "<ISSUE_IDENTIFIER>"` and b
 
 ## Parent Mode
 
-Orchestrator for a parent issue with children. Routes each child issue to a Claude Code sub-agent (inheriting the session model unless overridden) or the Codex CLI, per the "Arguments and Model Selection" resolution rules.
+Orchestrator for a parent issue with children. The orchestrator runs in the top-level harness the user invoked and dispatches each child issue to a worker sub-agent of that **same harness** (inheriting the session model unless `--model` overrides it), per the "Arguments and Model Selection" resolution rules. It never hands implementation to a different harness.
 
 ### P1. Verify Primary Issue Branch and Rebase
 
@@ -876,7 +879,6 @@ For each child, record:
 - `id` (UUID)
 - `title`
 - `statusType` (`triage`, `backlog`, `unstarted`, `started`, `completed`, `canceled`)
-- `labels` (names, lowercased for routing)
 
 Skip any child whose status is `completed` or `canceled`.
 
@@ -920,7 +922,7 @@ Ensure the `implementing` label exists. Then call `mcp__linear-server__save_issu
 
 ### P6. Dispatch Sub-Issues
 
-Process sub-issues **sequentially** (each phase depends on the previous one). Before dispatching each open child, the orchestrator (this session) must inspect that sub-issue's labels and choose the implementation runner from those labels. The dispatched worker runs the full leaf lifecycle for that one sub-issue and returns a short result summary.
+Process sub-issues **sequentially** (each phase depends on the previous one). Each open child is dispatched to a worker sub-agent of the orchestrator's own harness — the model comes from `MODEL_OVERRIDE` or the session default, never from issue labels. The dispatched worker runs the full leaf lifecycle for that one sub-issue and returns a short result summary.
 
 Capture the orchestrator's primary issue branch once at the start of P6 — pre-dispatch cleanup may need to switch back to it if a previous run crashed while a sub-issue branch was checked out:
 
@@ -976,61 +978,52 @@ If partial work exists (`SUB_BRANCH` or `SUB_OPEN_PR` is non-empty):
    Discarding partial work from a previous attempt. Starting a clean implementation.
    ```
 
-**Dispatch selection per sub-issue** — apply the "Arguments and Model Selection" resolution:
+**Dispatch per sub-issue** — always a sub-agent of the orchestrator's own harness, with the model from the "Arguments and Model Selection" resolution (`MODEL_OVERRIDE` if set, else the session default). Issue labels play no part. Never dispatch implementation to a different harness than the one the user invoked.
 
-- If `MODEL_OVERRIDE` is set, it wins for every child: `codex` routes to the **Codex CLI**; any other name routes to a Claude sub-agent with that `model`.
-- Else lowercase the child's label names and match routing labels: `codex` → Codex CLI; `fable`/`opus`/`sonnet`/`haiku` → Claude sub-agent with that `model`. Conflicts prefer `codex` > `fable` > `opus` > `sonnet` > `haiku`.
-- Else (no override, no routing label) spawn a Claude sub-agent with **no `model` parameter** so the worker inherits the session-configured model.
+In every worker template below (both harnesses, initial dispatch and retries), the skill invocation inside the prompt must propagate the overrides per "Arguments and Model Selection": append ` --model <MODEL_OVERRIDE>` when `MODEL_OVERRIDE` is set and ` --reviewer <REVIEWER_OVERRIDE>` when `REVIEWER_OVERRIDE` is set. CLI-level flags on `codex exec` do not reach the child skill's argument parsing — only flags written into the `/linear-workflow:implement-issue` invocation text do.
 
-If routing selects Claude, spawn a sub-agent. Append ` --model <MODEL_OVERRIDE>` to the skill invocation only when `MODEL_OVERRIDE` is set:
+If `PRIMARY_RUNTIME=claude`, spawn a Claude Code sub-agent:
 
 ```
 Agent(
   description: "Implement <SUB_IDENTIFIER>",
   model: "<RESOLVED_MODEL — omit entirely for the session default>",
-  prompt: "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER> to implement this sub-issue
-  end-to-end. The skill handles branching, implementation, code review, CI, merge, and issue
-  transitions. Run to completion. Return a short summary: result (MERGED |
+  prompt: "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER><propagated flags> to implement
+  this sub-issue end-to-end. The skill handles branching, implementation, code review, CI, merge,
+  and issue transitions. Run to completion. Return a short summary: result (MERGED |
   MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED), PR number, and any follow-up issue identifier."
 )
 ```
 
-If routing selects Codex, run the Codex CLI directly:
+If `PRIMARY_RUNTIME=codex`, spawn the worker as a `codex exec` subprocess — still the Codex harness. Resolve `WORKER_MODEL` as `MODEL_OVERRIDE` when set; otherwise, if the orchestrator knows the model its own session is running, use that; otherwise leave `WORKER_MODEL` unset and omit `--model` so the worker uses the Codex CLI's configured default (a fresh `codex exec` reads configuration — it cannot see a model selected interactively in the invoking session, so propagate the session model explicitly whenever it is known). Run it under the same foreground/completion-gate rules as every `codex exec` call in this skill:
 
 ```bash
-CODEX_FRONTIER_MODEL=$(codex debug models | jq -er '
-  [.models[]
-   | select(.visibility == "list")
-   | select(((.description // "") | ascii_downcase) | contains("latest frontier"))]
-  | sort_by(.priority)
-  | (.[0].slug // empty)
-')
-test -n "$CODEX_FRONTIER_MODEL"
-codex exec --model "$CODEX_FRONTIER_MODEL" --dangerously-bypass-approvals-and-sandbox \
-  "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER> to implement this sub-issue end-to-end.
-The skill handles branching, implementation, code review, CI, merge, and issue transitions.
-Run to completion. Return a short summary: result (MERGED | MERGED_WITH_DEFERRED_ACS |
-ESCALATED | FAILED), PR number, and any follow-up issue identifier."
+set --
+[ -n "${WORKER_MODEL:-}" ] && set -- --model "$WORKER_MODEL"
+codex exec "$@" --dangerously-bypass-approvals-and-sandbox \
+  "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER><propagated flags> to implement this
+sub-issue end-to-end. The skill handles branching, implementation, code review, CI, merge, and
+issue transitions. Run to completion. Return a short summary: result (MERGED |
+MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED), PR number, and any follow-up issue identifier."
 ```
+
+(The `set --` argument-list form keeps the optional `--model` flag as separate words in any POSIX shell — `${VAR:+...}` inline expansion is not portable to zsh, which would pass `--model <name>` as a single argument.)
+
+If `PRIMARY_RUNTIME=unknown`, dispatch through whatever native sub-agent mechanism the current harness provides — never launch a different harness's CLI to run implementation.
 
 Wait for the dispatched worker to complete before starting the next one.
 
 #### Handling Usage Limits
 
-Usage limits apply when a runner's output indicates capacity is exhausted — for example output containing phrases like "usage limit reached", "rate limit exceeded", "quota exceeded", or "you have reached your usage limit" — without returning a valid implementation result (`MERGED | MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED`). Do not count usage-limit events as stuck-worker retry attempts.
+Usage limits apply when a worker's output indicates capacity is exhausted — for example output containing phrases like "usage limit reached", "rate limit exceeded", "quota exceeded", or "you have reached your usage limit" — without returning a valid implementation result (`MERGED | MERGED_WITH_DEFERRED_ACS | ESCALATED | FAILED`). Do not count usage-limit events as stuck-worker retry attempts.
 
-**If Codex hits a usage limit:**
-
-1. Do not increment the retry counter.
-2. Switch the runner for this sub-issue to Claude and dispatch a sub-agent with **no `model` parameter** (inheriting the session model), using the same sub-issue identifier and prompt.
-
-**If a Claude runner hits a usage limit (any model — session default, override, or label-routed):**
+**When any worker hits a usage limit (either harness, any model):**
 
 1. Do not increment the retry counter.
 2. Parse the earliest "retry after" time from all usage-limit messages (e.g., "available again at HH:MM UTC", "retry in N minutes", "resets at HH:MM"). Convert to seconds until that time.
 3. If no retry time is parseable, default to 15 minutes (`900` seconds).
 4. Wait (`sleep <seconds_until_retry>`) — do not prompt the user.
-5. Re-dispatch the sub-issue using its original model resolution (`MODEL_OVERRIDE` if set, else routing label, else session default).
+5. Re-dispatch the sub-issue in the **same harness** with its original model resolution (`MODEL_OVERRIDE` if set, else session default). Never switch harnesses to dodge a usage limit — that would move implementation out of the harness the user invoked.
 
 Never prompt the user for guidance on usage limits — resolve autonomously.
 
@@ -1050,14 +1043,14 @@ Use a retry loop with up to **3 total attempts** per sub-issue:
    ```bash
    git fetch origin
    ```
-4. Re-resolve the sub-issue's model (re-check labels; `MODEL_OVERRIDE` still wins), then dispatch a replacement worker with the same sub-issue identifier plus a warning. Do not describe implementation steps — just provide context and let the skill decide what to do.
+4. Dispatch a replacement worker in the same harness with the same model resolution (`MODEL_OVERRIDE` if set, else session default), using the same sub-issue identifier plus a warning. Do not describe implementation steps — just provide context and let the skill decide what to do.
 
-   If the route is Claude (omit `model` for the session default, as always):
+   If `PRIMARY_RUNTIME=claude` (omit `model` for the session default, as always):
    ```
    Agent(
      description: "Implement <SUB_IDENTIFIER> (retry <N>)",
      model: "<RESOLVED_MODEL — omit entirely for the session default>",
-     prompt: "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER>.
+     prompt: "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER><propagated flags>.
 
      Warning: A previous attempt did not complete. Point: <e.g. 'wrote files but did not commit'>. Reason: <e.g. 'worker returned without a result summary'>.
 
@@ -1065,18 +1058,12 @@ Use a retry loop with up to **3 total attempts** per sub-issue:
    )
    ```
 
-   If the route is Codex:
+   If `PRIMARY_RUNTIME=codex` (resolve `WORKER_MODEL` exactly as in the initial P6 dispatch, using the same portable `set --` form for the optional flag):
    ```bash
-   CODEX_FRONTIER_MODEL=$(codex debug models | jq -er '
-     [.models[]
-      | select(.visibility == "list")
-      | select(((.description // "") | ascii_downcase) | contains("latest frontier"))]
-     | sort_by(.priority)
-     | (.[0].slug // empty)
-   ')
-   test -n "$CODEX_FRONTIER_MODEL"
-   codex exec --model "$CODEX_FRONTIER_MODEL" --dangerously-bypass-approvals-and-sandbox \
-     "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER>.
+   set --
+   [ -n "${WORKER_MODEL:-}" ] && set -- --model "$WORKER_MODEL"
+   codex exec "$@" --dangerously-bypass-approvals-and-sandbox \
+     "Invoke /linear-workflow:implement-issue <SUB_IDENTIFIER><propagated flags>.
 
 Warning: A previous attempt did not complete. Point: <e.g. 'wrote files but did not commit'>.
 Reason: <e.g. 'worker returned without a result summary'>.
@@ -1123,13 +1110,13 @@ After all original children are processed, re-list children via `mcp__linear-ser
 
 Compare against the original list. Any new open child is a follow-up created during review.
 
-Process follow-ups with the **full P6 pre-dispatch sequence** — including the *Pre-Dispatch: Detect and Discard Partial Work* step — then dispatch one worker per follow-up using the same label-routing rules.
+Process follow-ups with the **full P6 pre-dispatch sequence** — including the *Pre-Dispatch: Detect and Discard Partial Work* step — then dispatch one worker per follow-up using the same-harness dispatch rules from P6.
 
 ### P8. Nested Parent Issues
 
-If a sub-issue or follow-up is itself a parent (has its own children), the dispatched worker invoked in P6 will simply re-enter this skill in Parent Mode and orchestrate its own children with the same model-resolution rules — including the P6 pre-dispatch partial-work cleanup for each grand-child. Nested orchestration composes naturally — no special handling is needed for depth beyond re-resolving the model at each parent.
+If a sub-issue or follow-up is itself a parent (has its own children), the dispatched worker invoked in P6 will simply re-enter this skill in Parent Mode and orchestrate its own children with the same rules — including the P6 pre-dispatch partial-work cleanup for each grand-child. Because P6 workers are sub-agents of the same harness, every nested orchestrator also runs in the harness the user originally invoked. Nested orchestration composes naturally — no special handling is needed for depth.
 
-Nested parent orchestrators follow the same resolution: `MODEL_OVERRIDE` (propagated via `--model`) first, then the nested parent issue's own routing label (`codex` → Codex CLI; `fable`/`opus`/`sonnet`/`haiku` → that Claude model), otherwise inherit the session-configured model.
+Nested parent orchestrators follow the same resolution: `MODEL_OVERRIDE` (propagated via `--model`) first, otherwise inherit the session-configured model.
 
 ### P9. Post Summary
 
@@ -1206,8 +1193,8 @@ Leave the parent in its current state. Add `needs-human-review` alongside `imple
 - **Linear MCP**: `mcp__linear-server__*` tools configured for normal issue transitions and, on selected-reviewer output failure, best-effort related issue creation plus issue-backed document creation
 - **GitHub CLI**: `gh` authenticated with repo access
 - **Git**: Clean working directory
-- **Cross-runtime review**: Claude-hosted implementation requires a Codex frontier path; Codex-hosted implementation requires the Claude Code CLI with access to the latest Claude Opus through the `opus` alias. `--reviewer` is the only reviewer-routing override. `--model` and issue routing labels affect implementation only.
-- **Codex access**: The `codex` CLI and `jq` must resolve the latest frontier slug from `codex debug models`; `codex exec --model "$CODEX_FRONTIER_MODEL"` is preferred, and a model-selectable Codex MCP server may be used after an inconclusive CLI review. The Codex CLI is the only Codex method usable for implementation dispatch in Parent Mode.
+- **Same-harness implementation**: The orchestrator and every implementation worker run in the harness the user invoked. Only code review crosses harnesses. `--reviewer` is the only reviewer-routing override. `--model` affects implementation only, and only the model — never the harness.
+- **Codex access**: Required for review when the user invoked the skill in Claude Code: the `codex` CLI and `jq` must resolve the latest frontier slug from `codex debug models`; `codex exec --model "$CODEX_FRONTIER_MODEL"` is preferred, and a model-selectable Codex MCP server may be used after an inconclusive CLI review. When the user invoked the skill in Codex, `codex exec` is also how Parent Mode spawns its same-harness workers.
 - **Claude access**: The `claude` CLI must be on `PATH` and authenticated when a Codex implementation is automatically paired with the latest Claude Opus. L8 proves this end-to-end with a bounded `--print --output-format json` probe before the first round; `jq` is required to parse the result envelope. Reviewer-output failure escalates to human review with a redacted debug bundle plus best-effort creation of a related Linear issue and attached document; it never falls back to the implementation model family.
 
 ## Linear API Cheat Sheet
