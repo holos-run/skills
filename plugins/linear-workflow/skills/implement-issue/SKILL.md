@@ -1,7 +1,7 @@
 ---
 name: implement-issue
-description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Workers inherit the session-configured model by default; override with a --model argument or issue routing labels. Code review uses the opposite model family from the primary implementation runtime (the latest Claude Opus reviews Codex; the Codex frontier model reviews Claude) and posts findings back to the PR; override the reviewer with --reviewer. Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
-version: 2.15.1
+description: Implement a Linear issue end-to-end. Handles both single issues (branch, code, PR, review, CI, merge) and parent issues with sub-issues (sub-agent orchestration over children). Workers inherit the session-configured model by default; override with a --model argument or issue routing labels. Code review uses the opposite model family from the primary implementation runtime (the latest Claude Opus reviews Codex; the Codex frontier model reviews Claude), posts findings back to the PR, and captures reviewer-output failures in a related Linear escalation issue with an attached debug document; override the reviewer with --reviewer. Use this skill when the user provides a Linear issue (URL or identifier like PLA-287) and asks to implement, work on, fix, or resolve it. Triggers on phrases like "implement issue", "work on this issue", "fix this issue", "implement linear plan", "execute linear plan", or when given a Linear issue identifier.
+version: 2.16.0
 ---
 
 # Implement Issue
@@ -292,7 +292,7 @@ PR_NUMBER=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].nu
 2. **`PRIMARY_RUNTIME=codex`** → select the latest Claude Opus through `--model opus`.
 3. **`PRIMARY_RUNTIME=claude`** → select the latest Codex frontier reviewer resolved from the current Codex model catalog.
 4. **`PRIMARY_RUNTIME=unknown` and project config contains a reviewer command** → use the fenced shell command from the project's `CLAUDE.md` or `AGENTS.md` `## Code Review` section.
-5. **`PRIMARY_RUNTIME=unknown` and no project reviewer exists** → post a `Code Review Cannot Proceed` comment, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`. Do not guess and risk same-runtime self-review.
+5. **`PRIMARY_RUNTIME=unknown` and no project reviewer exists** → post a `Code Review Cannot Proceed` comment, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`. Do not guess and risk same-runtime self-review. Do not run the reviewer-output debug-capture flow below: no reviewer was invoked, so there is no attempt evidence to capture.
 
 `MODEL_OVERRIDE` and issue routing labels control implementation dispatch only. They must not influence L8. This separation is what guarantees adversarial review when, for example, a `codex` label sends implementation to Codex: the resulting Codex leaf invocation detects itself and selects the latest Claude Opus for review.
 
@@ -308,6 +308,41 @@ EOF
 ```
 
 If `REVIEWER_OVERRIDE` deliberately selects the same model family as `PRIMARY_RUNTIME`, add this line below the PR comment heading for every reviewer path: `Same-family review explicitly requested via --reviewer; cross-runtime pairing was overridden.`
+
+**Escalation debug capture (all invoked reviewer paths).** Run this flow exactly once when an invoked reviewer produces no usable output: the Claude probe fails, both permitted attempts for a Claude or project-configured review round are inconclusive, or the Codex CLI attempts and Codex MCP method both fail. Do not run it for selection rule 5 above because that path never invoked a reviewer. The caller supplies `FAILURE_POINT`, `FAILURE_SUMMARY`, `REVIEWER_PATH`, `REVIEWER_MODEL`, the path-specific `Code Review Cannot Proceed` PR-comment body, and all completed-attempt evidence. Record `ESCALATION_ISSUE_IDENTIFIER`, `ESCALATION_DOCUMENT_REFERENCE`, and `ESCALATION_LINEAR_ERRORS` for L16.
+
+1. **Assemble the debug bundle before deleting temporary artifacts.** Build Markdown with these sections, modeled after a diagnostic incident report:
+
+   - `# Reviewer failure debug capture`
+   - `## Summary`: failure point and summary, `ISSUE_IDENTIFIER`, PR number, repository, branch, primary runtime, reviewer path and exact model, skill name `implement-issue`, skill version from this file's front matter, and the [canonical SKILL.md URL](https://github.com/holos-run/skills/blob/main/plugins/linear-workflow/skills/implement-issue/SKILL.md).
+   - `## Environment`: start and completion timestamps, execution connector or host when known, and relevant non-secret tool versions.
+   - `## Escalation evidence`: why the output was unusable, the PR-comment posting status, and any method-selection or MCP qualification failures.
+   - `## Attempt-by-attempt statuses`: one subsection per probe, CLI attempt, or MCP attempt. Record the exact command or remote invocation run; connector session ID (or `none`) and connector exit code; start and completion timestamps; whether the shell reached each status-recording line; `PROBE_STATUS` / `PROBE_PARSE`, `GH_DIFF_STATUS` / `CLAUDE_STATUS` / `EXTRACT_STATUS`, or `CODEX_STATUS` as applicable; stderr tails; result-envelope excerpts; and post-completion byte counts for the diff and every output, stderr, or envelope artifact. Use `not applicable` or `not produced` for fields a method does not have instead of omitting them.
+   - `## Conclusion and confidence`: the most likely failure boundary, confidence level, and what remains unknown.
+
+   Apply the same publication-safety rules required by the escalation PR comment below to the entire bundle: truncate every stderr tail to its last 20 lines, cap each result-envelope excerpt at approximately 2000 characters, and redact API keys, bearer tokens, `sk-` / `ghp_`-style secrets, URLs with embedded credentials, and other credential-shaped strings. Preserve exact commands only after applying those redactions. The full PR diff is evidence only by byte count; do not embed its contents in the Linear document.
+
+2. **Post the existing path-specific PR escalation comment.** Use the caller's `Code Review Cannot Proceed` template and include its compact, redacted evidence. Keep the network call bounded. If it fails, append the status to `ESCALATION_LINEAR_ERRORS` and continue.
+
+3. **Create the related escalation issue.** Ensure `needs-human-review` exists for `TEAM_KEY`, then call `mcp__linear-server__save_issue` with:
+
+   - `team: "<TEAM_KEY>"`
+   - `title: "fix(implement-issue): code reviewer returned no output on PR #<PR_NUMBER> (<REPO>)"`
+   - `labels: ["needs-human-review"]`
+   - `relatedTo: ["<ISSUE_IDENTIFIER>"]`
+   - `description` containing one short paragraph with the failure summary, reviewer path and model, PR/repository reference, skill name and front-matter version, the canonical SKILL.md URL above, a pointer to the attached document by its exact title (`Reviewer failure debug capture — PR #<PR_NUMBER> <REPO> (<ISSUE_IDENTIFIER>)`), and this exact ask: `Modify the implement-issue skill so this failure mode is prevented or diagnosable.`
+
+   Capture the created issue's identifier as `ESCALATION_ISSUE_IDENTIFIER`. The issue description must remain planning context, not a copy of the debug bundle.
+
+4. **Attach the bundle as a Linear document.** Only if step 3 returned an identifier, call `mcp__linear-server__save_document` with:
+
+   - `title: "Reviewer failure debug capture — PR #<PR_NUMBER> <REPO> (<ISSUE_IDENTIFIER>)"`
+   - `issue: "<ESCALATION_ISSUE_IDENTIFIER>"`
+   - `content: <the redacted debug bundle Markdown>`
+
+   Capture the document URL, slug, or ID as `ESCALATION_DOCUMENT_REFERENCE`; when the returned reference is linkable, make one best-effort `mcp__linear-server__save_issue` call to update the escalation issue description's document pointer with that link. A failed description update is recorded in `ESCALATION_LINEAR_ERRORS` and never halts the flow. Then post a comment on the failed issue linking `ESCALATION_ISSUE_IDENTIFIER` and the attached document. If document creation fails, still post a comment linking the escalation issue and state that document attachment failed.
+
+5. **Degrade gracefully.** Treat every Linear create, document, or comment call in steps 3–4 as a single best-effort attempt. If issue creation fails, do not attempt document creation; append the failure to `ESCALATION_LINEAR_ERRORS` and continue. If document creation or the linking comment fails, append that failure and continue. Never retry indefinitely or let this flow prevent the existing PR-comment and label escalation. Apply `needs-human-review` to the PR and failed Linear issue, remove temporary reviewer artifacts, and skip to L16 with result `ESCALATED`; L16 reports any created escalation issue and every best-effort failure.
 
 **Codex frontier reviewer (`PRIMARY_RUNTIME=claude` by default, or selected via `--reviewer codex`):**
 
@@ -398,7 +433,7 @@ Interpret the completed result deterministically — never re-run merely to "che
 
 Do not use `@codex review` as a fallback for this route because the GitHub integration does not accept the dynamically resolved frontier slug.
 
-**If both methods fail:** do not fall back to Claude. Surface an explicit error and escalate now (do not proceed to L9–L11):
+**If both methods fail:** do not fall back to Claude. Surface an explicit error and escalate now (do not proceed to L9–L11). Run the shared **Escalation debug capture** flow exactly once with `REVIEWER_PATH` identifying the Codex CLI and MCP qualification path, `REVIEWER_MODEL="$CODEX_FRONTIER_MODEL"` (or `unresolved`), and evidence from both completed CLI attempts plus the MCP availability/qualification result. Use the following path-specific PR-comment body in step 2:
 
 ```bash
 gh pr comment $PR_NUMBER --body "$(cat <<'EOF'
@@ -407,10 +442,9 @@ gh pr comment $PR_NUMBER --body "$(cat <<'EOF'
 This implementation is routed to the latest Codex frontier reviewer, but no qualifying invocation method is available: the current frontier slug could not be resolved from `codex debug models`, `codex exec --model "$CODEX_FRONTIER_MODEL"` was inconclusive, or no connected Codex MCP tool could use the resolved frontier slug. The reviewer cannot silently downgrade to Claude because that may be the implementation model. Marking for human review.
 EOF
 )"
-gh pr edit $PR_NUMBER --add-label "needs-human-review"
 ```
 
-Then call `mcp__linear-server__save_issue` with `issue: "<ISSUE_IDENTIFIER>"` and `labels: ["needs-human-review", ...existing]`. Skip directly to step L16 with result `ESCALATED`.
+The shared flow creates the related escalation issue and debug document, applies the PR and Linear labels, and skips directly to L16 with result `ESCALATED` even if its Linear creates fail.
 
 **Project-configured reviewer (`PRIMARY_RUNTIME=unknown`, no `--reviewer`, and project config provides a command):**
 
@@ -443,6 +477,8 @@ codex exec --model "$CODEX_FRONTIER_MODEL" --dangerously-bypass-approvals-and-sa
 
 If found, that command is what L9 will run, with variables resolved from the shell.
 
+Apply the same completion gate and final-line verdict requirement used by the CLI reviewers. If the configured command completes with empty review text or without a conclusive final verdict, record its exact expanded command, connector session and exit evidence, timestamps, stdout/stderr byte counts, and redacted stderr tail, then rerun that exact command once. If the rerun is also inconclusive, run the shared **Escalation debug capture** flow exactly once with `REVIEWER_PATH=project-configured`, the configured model if determinable (otherwise `unknown`), both attempts' evidence, and a `Code Review Cannot Proceed` PR-comment body stating that the configured reviewer returned no usable output. Do not substitute another reviewer. The shared flow applies the labels and skips to L16 with result `ESCALATED`, even if creating the related issue or document fails.
+
 **Claude reviewer (`PRIMARY_RUNTIME=codex` by default, or selected via `--reviewer claude|opus|fable|sonnet|haiku`):**
 
 Resolve `CLAUDE_REVIEW_MODEL`: `claude` and `opus` both resolve to the moving `opus` alias; the other explicit reviewer values retain their names. For the automatic Codex-runtime route, it is always `opus`, ensuring each run uses the latest available Claude Opus model.
@@ -471,7 +507,7 @@ PROBE_PARSE=$?
 
 `mktemp -d` creates `REVIEW_DIR` with mode 700; every reviewer artifact (diff, envelopes, stderr) lives inside it — never in ad-hoc sibling paths — and the whole directory is removed with `rm -rf "$REVIEW_DIR"` when review concludes or escalates, because it holds the full PR diff and CLI diagnostics. The `if` guard exits before any child path exists: when `mktemp` fails or returns empty, the shell call ends there — treat that nonzero exit as a probe failure and escalate. Never construct child paths from an unverified `REVIEW_DIR`, because an empty prefix turns them into root-level paths like `/pr.diff`. Run the probe with the host shell tool's deadline strictly above its 135 s worst case (120 s inner bound + 15 s kill grace) — e.g., 180000 ms for Claude Code's Bash tool, whose default deadline is shorter. The jq filter requires `.is_error == false` literally (a missing field must fail, so `| not` is not acceptable) and a non-empty string `result`.
 
-The probe succeeds only when `PROBE_STATUS` and `PROBE_PARSE` are both 0. If `claude` or `jq` is missing, or the probe fails, the Claude reviewer is unavailable: post a `Code Review Cannot Proceed` comment (template below) that names the required model **and includes the probe evidence** — `PROBE_STATUS` and `PROBE_PARSE` plus the tails of `probe.err` and `probe-jq.err`, or the JSON envelope's `subtype`/`result` when the error surfaced there — then add `needs-human-review` to the PR and Linear issue and skip to L16 with result `ESCALATED`. Do not invoke Codex or inherit the current session model, and do not spend review rounds discovering a statically broken CLI.
+The probe succeeds only when `PROBE_STATUS` and `PROBE_PARSE` are both 0. If `claude` or `jq` is missing, or the probe fails, the Claude reviewer is unavailable. Run the shared **Escalation debug capture** flow exactly once with `FAILURE_POINT=probe`, the probe's exact command, connector-session evidence, `PROBE_STATUS` / `PROBE_PARSE`, byte counts, stderr tails, and envelope evidence. Use the Claude `Code Review Cannot Proceed` template below as the path-specific PR-comment body. The shared flow applies `needs-human-review` to the PR and failed issue and skips to L16 with result `ESCALATED`, even if creating the related issue or document fails. Do not invoke Codex or inherit the current session model, and do not spend review rounds discovering a statically broken CLI.
 
 If the probe succeeds, each round in L9–L11 runs Claude Code as **one foreground, bounded call**, under the same four rules as the Codex CLI reviewer: never background it, never poll the process table for completion, bound every network-dependent command with `timeout --kill-after=<grace> <seconds>`, and wait through connector yields on the exact same session until the connector reports an exit code. A foreground tool session may yield control before process exit; that yield is still the first attempt and waiting on it with the connector-native stdin/wait operation is not backgrounding, polling, or another attempt. If an outer orchestration cell yields, resume its `cell_id` with the outer wait operation so it continues waiting on the existing shell session. The inner `timeout --kill-after=10 60` diff fetch and `timeout --kill-after=15 490` Claude call remain authoritative: cumulative connector waits must allow enough time to observe their exit status, including kill grace, rather than imposing a shorter host deadline. A host that permits a longer Claude bound may raise it only when the combined inner worst case remains strictly below the host deadline.
 
@@ -521,7 +557,7 @@ After the completion gate passes, interpret the result deterministically — nev
 - byte counts for `pr.diff`, `gh-diff.err`, `review.json`, `review.err`, `review.txt`, and `review-jq.err`, measured only after connector completion;
 - the tails of `review.err`, `gh-diff.err`, and `review-jq.err`, plus the envelope's `subtype`/`is_error` from `review.json` if it parsed.
 
-Then rerun the exact foreground command once. If the rerun is also inconclusive, do not invoke Codex or inherit the current session model. Post the `Code Review Cannot Proceed` comment below, add `needs-human-review` to the PR and Linear issue, and skip to L16 with result `ESCALATED`.
+Then rerun the exact foreground command once. If the rerun is also inconclusive, do not invoke Codex or inherit the current session model. Run the shared **Escalation debug capture** flow exactly once with both attempts' complete evidence and the Claude `Code Review Cannot Proceed` template below as the path-specific PR-comment body. The shared flow applies the labels and skips to L16 with result `ESCALATED`, even if creating the related issue or document fails.
 
 **Escalation comment (probe failure and inconclusive rounds alike).** The comment must carry the captured evidence — never only a prose conclusion like "completed without producing review output", which leaves the failure undiagnosable. Before posting, truncate each stderr tail to its last 20 lines, cap the result-envelope excerpt at ~2000 characters, and redact anything credential-shaped (API keys, bearer tokens, `sk-`/`ghp_`-style strings, URLs with embedded credentials) — CLI diagnostics can leak local paths and account details, and a PR comment is public within the repo:
 
@@ -541,7 +577,7 @@ EOF
 COMMENT_STATUS=$?
 ```
 
-The escalation posting is itself network-dependent, so it carries the same `timeout --kill-after` bound as every other remote command. If `COMMENT_STATUS` is nonzero, do not stall: note the failed posting in the L16 summary, still remove `$REVIEW_DIR`, still apply the `needs-human-review` labels, and still finish with result `ESCALATED`.
+The escalation posting is itself network-dependent, so it carries the same `timeout --kill-after` bound as every other remote command. It is step 2 of the shared escalation flow. If `COMMENT_STATUS` is nonzero, do not stall: record it in `ESCALATION_LINEAR_ERRORS`, still attempt the related Linear issue and document, still remove `$REVIEW_DIR`, still apply the `needs-human-review` labels, and still finish with result `ESCALATED`.
 
 For automatic Codex-runtime review, the PR comment header must identify `opus (latest Claude Opus)`, not `claude session model`. This makes accidental regression to the behavior in the linked failure visible without pinning a model version.
 
@@ -713,6 +749,9 @@ Call `mcp__linear-server__save_comment` with `issue: "<ISSUE_IDENTIFIER>"` and b
 - Review rounds: <count>
 - Wall clock time: <MINUTES>m <SECONDS>s
 - Follow-up: <FOLLOW_UP_IDENTIFIER> (if any)
+- Reviewer escalation: <ESCALATION_ISSUE_IDENTIFIER> (if reviewer-output escalation created one)
+- Escalation attachment: <ESCALATION_DOCUMENT_REFERENCE> (if created)
+- Escalation errors: <ESCALATION_LINEAR_ERRORS> (if any best-effort step failed)
 ```
 
 ---
@@ -1138,12 +1177,12 @@ Leave the parent in its current state. Add `needs-human-review` alongside `imple
 
 ## Prerequisites
 
-- **Linear MCP**: `mcp__linear-server__*` tools configured
+- **Linear MCP**: `mcp__linear-server__*` tools configured for normal issue transitions and, on invoked-reviewer output failure, related issue creation plus issue-backed document creation
 - **GitHub CLI**: `gh` authenticated with repo access
 - **Git**: Clean working directory
 - **Cross-runtime review**: Claude-hosted implementation requires a Codex frontier path; Codex-hosted implementation requires the Claude Code CLI with access to the latest Claude Opus through the `opus` alias. `--reviewer` is the only reviewer-routing override. `--model` and issue routing labels affect implementation only.
 - **Codex access**: The `codex` CLI and `jq` must resolve the latest frontier slug from `codex debug models`; `codex exec --model "$CODEX_FRONTIER_MODEL"` is preferred, and a model-selectable Codex MCP server may be used after an inconclusive CLI review. The Codex CLI is the only Codex method usable for implementation dispatch in Parent Mode.
-- **Claude access**: The `claude` CLI must be on `PATH` and authenticated when a Codex implementation is automatically paired with the latest Claude Opus. L8 proves this end-to-end with a bounded `--print --output-format json` probe before the first round; `jq` is required to parse the result envelope. Reviewer failure escalates to human review with the captured exit status and stderr; it never falls back to the implementation model family.
+- **Claude access**: The `claude` CLI must be on `PATH` and authenticated when a Codex implementation is automatically paired with the latest Claude Opus. L8 proves this end-to-end with a bounded `--print --output-format json` probe before the first round; `jq` is required to parse the result envelope. Reviewer-output failure escalates to human review with a redacted debug bundle attached to a related Linear issue; it never falls back to the implementation model family.
 
 ## Linear API Cheat Sheet
 
@@ -1152,8 +1191,9 @@ Leave the parent in its current state. Add `needs-human-review` alongside `imple
 | Fetch issue (incl. blocking relations) | `mcp__linear-server__get_issue` | `id` |
 | List children | `mcp__linear-server__list_issues` | `parentId` |
 | Update issue | `mcp__linear-server__save_issue` | `issue`, `state` / `labels` / `description` |
-| Create issue | `mcp__linear-server__save_issue` | `team`, `title`, `description` |
+| Create issue | `mcp__linear-server__save_issue` | `team`, `title`, `description`, optional `relatedTo` |
 | Create sub-issue | `mcp__linear-server__save_issue` | `team`, `parentId`, `title`, `description` |
+| Create issue document | `mcp__linear-server__save_document` | `issue`, `title`, `content` |
 | Post comment | `mcp__linear-server__save_comment` | `issue`, `body` |
 | List comments | `mcp__linear-server__list_comments` | `issueId` |
 | List statuses | `mcp__linear-server__list_issue_statuses` | `team` |
