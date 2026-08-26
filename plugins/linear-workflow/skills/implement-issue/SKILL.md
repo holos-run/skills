@@ -1,7 +1,7 @@
 ---
 name: implement-issue
-description: v3.1.0 — Implement a Linear issue end-to-end, either as one leaf issue or as a parent orchestrating children. All implementation work — orchestrator and sub-issue workers alike — runs in the harness the user invoked; --model adjusts only the model within that harness, and only code review crosses to the opposite harness. Cross-runtime review posts findings to the PR; reviewer-output failures stop the merge and produce redacted diagnostics plus a best-effort related Linear issue and document. Every Linear and PR comment the skill posts ends with an agent-attribution footer naming the harness, model, and reasoning effort (for example `claude fable-5 high`) so colleagues know they are reading agent output, not the human account owner. Use --reviewer only to override reviewer selection. Triggers when the user provides a Linear issue URL or identifier (for example PLA-287) and asks to implement, work on, fix, resolve, or execute its plan.
-version: 3.1.0
+description: v3.2.0 — Implement a Linear issue end-to-end, either as one leaf issue or as a parent orchestrating children. All implementation work — orchestrator and sub-issue workers alike — runs in the harness the user invoked; --model adjusts only the model within that harness, and only code review crosses to the opposite harness. Cross-runtime review posts findings to the PR; reviewer-output failures stop the merge and produce redacted diagnostics plus a best-effort related Linear issue and document. Every Linear and PR comment the skill posts ends with an agent-attribution footer naming the harness, model, and reasoning effort (for example `claude fable-5 high`) so colleagues know they are reading agent output, not the human account owner. Use --reviewer only to override reviewer selection. Triggers when the user provides a Linear issue URL or identifier (for example PLA-287) and asks to implement, work on, fix, resolve, or execute its plan.
+version: 3.2.0
 # Guardrail: whenever version changes, update the leading vX.Y.Z prefix in description in the same PR.
 ---
 
@@ -352,7 +352,7 @@ The heading names the reviewer model; the footer names the posting agent per the
 
 If `REVIEWER_OVERRIDE` deliberately selects the same model family as `PRIMARY_RUNTIME`, add this line below the PR comment heading for every reviewer path: `Same-family review explicitly requested via --reviewer; cross-runtime pairing was overridden.`
 
-**Escalation debug capture (all reviewer invocation paths).** Run this flow exactly once when a selected reviewer path produces no usable output: the Claude probe fails, both permitted attempts for a Claude or project-configured review round are inconclusive, or the Codex CLI attempts and Codex MCP method both fail. Do not run it for selection rule 5 above because that path never invoked or probed a reviewer, so it has no attempt evidence to capture. The caller supplies `FAILURE_POINT`, `FAILURE_SUMMARY`, `REVIEWER_PATH`, `REVIEWER_MODEL`, the path-specific `Code Review Cannot Proceed` PR-comment body, and all completed-attempt evidence. Record `ESCALATION_ISSUE_IDENTIFIER`, `ESCALATION_DOCUMENT_REFERENCE`, and `ESCALATION_LINEAR_ERRORS` for L16.
+**Escalation debug capture (all reviewer invocation paths).** Run this flow exactly once when a selected reviewer path produces no usable output: the Claude probe fails, both permitted attempts for a Claude or project-configured review round are inconclusive, the Codex CLI attempts and Codex MCP method both fail, or the shared diff-acquisition procedure exhausts its fetch retries (`FAILURE_POINT=diff-fetch` — a `gh` failure that never charges a reviewer attempt, so the evidence must name `gh`, not the reviewer). Do not run it for selection rule 5 above because that path never invoked or probed a reviewer, so it has no attempt evidence to capture. The caller supplies `FAILURE_POINT`, `FAILURE_SUMMARY`, `REVIEWER_PATH`, `REVIEWER_MODEL`, the path-specific `Code Review Cannot Proceed` PR-comment body, and all completed-attempt evidence. Record `ESCALATION_ISSUE_IDENTIFIER`, `ESCALATION_DOCUMENT_REFERENCE`, and `ESCALATION_LINEAR_ERRORS` for L16.
 
 1. **Assemble the debug bundle before deleting temporary artifacts.** Build Markdown with these sections, modeled after a diagnostic incident report:
 
@@ -393,6 +393,14 @@ If `REVIEWER_OVERRIDE` deliberately selects the same model family as `PRIMARY_RU
    Capture the document URL, slug, or ID as `ESCALATION_DOCUMENT_REFERENCE`; when the returned reference is linkable, make one best-effort `mcp__linear-server__save_issue` call to update the escalation issue description's document pointer with that link. A failed description update is recorded in `ESCALATION_LINEAR_ERRORS` and never halts the flow. Then post a comment on the original issue identified by `ISSUE_IDENTIFIER`, linking `ESCALATION_ISSUE_IDENTIFIER` and the attached document. If document creation fails, still post a comment linking the escalation issue and state that document attachment failed.
 
 5. **Degrade gracefully.** Treat every Linear create, document, description-update, or comment call in steps 3–4 as a single best-effort attempt. If issue creation fails, do not attempt document creation; append the failure to `ESCALATION_LINEAR_ERRORS` and continue. If document creation, the description update, or the linking comment fails, append that failure and continue. Never retry indefinitely or let this flow prevent the existing PR-comment and label escalation. Apply `needs-human-review` to the PR and to `ISSUE_IDENTIFIER` (the original Linear issue), remove temporary reviewer artifacts, and skip to L16 with result `ESCALATED`; L16 reports any created escalation issue and every best-effort failure.
+
+**PR diff acquisition (all CLI reviewer paths).** Fetching the PR diff is a prerequisite of a review round, not part of the reviewer invocation. Its failures are `gh`/network failures and must never consume a reviewer attempt — the reviewer was never launched. Every review round acquires its diff with this procedure:
+
+1. Resolve the PR head before the round: `HEAD_SHA=$(timeout --kill-after=10 30 gh pr view "$PR_NUMBER" --json headRefOid -q .headRefOid)`.
+2. **Reuse a verified diff when safe.** If a diff fetched earlier in this skill invocation exists, is non-empty, and was recorded against this same `HEAD_SHA`, copy or reuse that file instead of refetching — the diff of an unchanged head is immutable, and reuse removes a network dependency from reviewer retries. If `HEAD_SHA` cannot be resolved, do not reuse; fetch fresh.
+3. Otherwise fetch with `timeout --kill-after=10 60 gh pr diff "$PR_NUMBER"`, capturing stdout to the attempt's diff file and stderr to a sibling file. Transient transport failures (GraphQL `EOF`, connection reset, HTTP 5xx) are retried **here**, inside this step: up to 3 fetch attempts total, sleeping 15 seconds between attempts.
+4. A fetch attempt succeeds when its exit status is 0 and the diff file is non-empty. On success, record `HEAD_SHA` alongside the file so later rounds and retries can reuse it under rule 2.
+5. If all 3 fetch attempts fail, do not invoke the reviewer and do not charge a reviewer attempt. Run the shared **Escalation debug capture** flow once with `FAILURE_POINT=diff-fetch` and evidence naming `gh` as the failing component — per-attempt exit statuses, redacted stderr tails, and byte counts — never the reviewer.
 
 **Codex frontier reviewer (`PRIMARY_RUNTIME=claude` by default, or selected via `--reviewer codex`):**
 
@@ -457,19 +465,18 @@ The command L9 runs each round (feed the diff on stdin so Codex spends no turns 
 
 ```bash
 REVIEW_OUT=$(mktemp)
-gh pr diff "$PR_NUMBER" > "$REVIEW_OUT.diff"
-if [ ! -s "$REVIEW_OUT.diff" ]; then
-  CODEX_STATUS=1
-else
-  timeout 600 codex exec \
-    --model "$CODEX_FRONTIER_MODEL" \
-    --dangerously-bypass-approvals-and-sandbox \
-    --skip-git-repo-check \
-    --output-last-message "$REVIEW_OUT" \
-    "<the review prompt above, with $PR_NUMBER and $REPO expanded; the diff is also supplied on stdin>" \
-    < "$REVIEW_OUT.diff"
-  CODEX_STATUS=$?
-fi
+# Acquire "$REVIEW_OUT.diff" per the shared "PR diff acquisition" procedure above
+# (head-SHA reuse, bounded fetch, up to 3 transport retries). Acquisition failure
+# escalates there with FAILURE_POINT=diff-fetch and never reaches — or charges —
+# this reviewer invocation, so the diff here is always present and non-empty.
+timeout 600 codex exec \
+  --model "$CODEX_FRONTIER_MODEL" \
+  --dangerously-bypass-approvals-and-sandbox \
+  --skip-git-repo-check \
+  --output-last-message "$REVIEW_OUT" \
+  "<the review prompt above, with $PR_NUMBER and $REPO expanded; the diff is also supplied on stdin>" \
+  < "$REVIEW_OUT.diff"
+CODEX_STATUS=$?
 ```
 
 Before interpreting the result, apply the completion gate: the host execution session must have an observed exit status. A connector `session_id` with no exit code, a status variable or status artifact not yet written, or an empty redirect-target file while the process runs means **still running**, never inconclusive. Continue waiting on the same session. Only a completed session with an observed exit status may be interpreted below or consume a retry attempt.
@@ -574,50 +581,61 @@ jq -e '(.type == "result") and (.is_error == false)
 PROBE_PARSE=$?
 ```
 
-`mktemp -d` creates `REVIEW_DIR` with mode 700; every reviewer artifact (diff, envelopes, stderr) lives inside it — never in ad-hoc sibling paths — and the whole directory is removed with `rm -rf "$REVIEW_DIR"` when review concludes or escalates, because it holds the full PR diff and CLI diagnostics. The `if` guard exits before any child path exists: when `mktemp` fails or returns empty, the shell call ends there — treat that nonzero exit as a probe failure and escalate. Never construct child paths from an unverified `REVIEW_DIR`, because an empty prefix turns them into root-level paths like `/pr.diff`. Run the probe with the host shell tool's deadline strictly above its 135 s worst case (120 s inner bound + 15 s kill grace) — e.g., 180000 ms for Claude Code's Bash tool, whose default deadline is shorter. The jq filter requires `.is_error == false` literally (a missing field must fail, so `| not` is not acceptable) and a non-empty string `result`.
+`mktemp -d` creates `REVIEW_DIR` with mode 700; every reviewer artifact (diff, envelopes, stderr) lives inside it — never in ad-hoc sibling paths — and the whole directory is removed with `rm -rf "$REVIEW_DIR"` when review concludes or escalates, because it holds the full PR diff and CLI diagnostics. That final removal is best-effort: some host command policies reject `rm` invocations outright, and a rejected cleanup must never stall or fail the review — leave the mode-700 directory in place and note it. No mid-review `rm` is ever needed: each review attempt stages its artifacts in a fresh per-attempt subdirectory (below), so a failed attempt can never surface a previous attempt's files and no attempt requires an `rm`-based reset. The `if` guard exits before any child path exists: when `mktemp` fails or returns empty, the shell call ends there — treat that nonzero exit as a probe failure and escalate. Never construct child paths from an unverified `REVIEW_DIR`, because an empty prefix turns them into root-level paths like `/pr.diff`. Run the probe with the host shell tool's deadline strictly above its 135 s worst case (120 s inner bound + 15 s kill grace) — e.g., 180000 ms for Claude Code's Bash tool, whose default deadline is shorter. The jq filter requires `.is_error == false` literally (a missing field must fail, so `| not` is not acceptable) and a non-empty string `result`.
 
 The probe succeeds only when `PROBE_STATUS` and `PROBE_PARSE` are both 0. If `claude` or `jq` is missing, or the probe fails, the Claude reviewer is unavailable. Run the shared **Escalation debug capture** flow exactly once with `FAILURE_POINT=probe`, the probe's exact command, connector-session evidence, `PROBE_STATUS` / `PROBE_PARSE`, byte counts, stderr tails, and envelope evidence. Use the Claude `Code Review Cannot Proceed` body below as the path-specific PR-comment body. The shared flow applies `needs-human-review` to the PR and the original issue identified by `ISSUE_IDENTIFIER`, then skips to L16 with result `ESCALATED`, even if creating the related issue or document fails. Do not invoke Codex or inherit the current session model, and do not spend review rounds discovering a statically broken CLI.
 
-If the probe succeeds, each round in L9–L11 runs Claude Code as **one foreground, bounded call**, under the same four rules as the Codex CLI reviewer: never background it, never poll the process table for completion, bound every network-dependent command with `timeout --kill-after=<grace> <seconds>`, and wait through connector yields on the exact same session until the connector reports an exit code. A foreground tool session may yield control before process exit; that yield is still the first attempt and waiting on it with the connector-native stdin/wait operation is not backgrounding, polling, or another attempt. If an outer orchestration cell yields, resume its `cell_id` with the outer wait operation so it continues waiting on the existing shell session. The inner `timeout --kill-after=10 60` diff fetch and `timeout --kill-after=15 490` Claude call remain authoritative: cumulative connector waits must allow enough time to observe their exit status, including kill grace, rather than imposing a shorter host deadline. A host that permits a longer Claude bound may raise it only when the combined inner worst case remains strictly below the host deadline.
+If the probe succeeds, each round in L9–L11 runs Claude Code as **one foreground, bounded call**, under the same four rules as the Codex CLI reviewer: never background it, never poll the process table for completion, bound every network-dependent command with `timeout --kill-after=<grace> <seconds>`, and wait through connector yields on the exact same session until the connector reports an exit code. A foreground tool session may yield control before process exit; that yield is still the first attempt and waiting on it with the connector-native stdin/wait operation is not backgrounding, polling, or another attempt. If an outer orchestration cell yields, resume its `cell_id` with the outer wait operation so it continues waiting on the existing shell session. The inner `timeout --kill-after=10 60` diff fetch and the `timeout --kill-after=15 "$CLAUDE_REVIEW_TIMEOUT"` Claude call (default 490 seconds) remain authoritative: cumulative connector waits must allow enough time to observe their exit status, including kill grace, rather than imposing a shorter host deadline. The Claude bound is configurable via `CLAUDE_REVIEW_TIMEOUT`; a host that permits a longer bound may raise it only when the combined inner worst case — raised bound plus kill grace — remains strictly below the host deadline.
 
-Claude Code `--print` accepts a prompt argument and appends piped stdin to that prompt; supply the diff on stdin. Use `--output-format json`, not `text`: the JSON envelope makes success machine-checkable (`type`, `is_error`, non-empty `result`) where an empty text stream is ambiguous, and capturing stderr separately means every failure leaves diagnosable evidence. Each attempt starts from a clean slate so a failed attempt can never surface a previous attempt's files:
+Claude Code `--print` accepts a prompt argument and appends piped stdin to that prompt; supply the diff on stdin. Use `--output-format json`, not `text`: the JSON envelope makes success machine-checkable (`type`, `is_error`, non-empty `result`) where an empty text stream is ambiguous, and capturing stderr separately means every failure leaves diagnosable evidence.
+
+**Diff-only review.** The complete diff arrives on stdin, so the reviewer needs no repository exploration — unbounded agentic exploration of the repository is the leading suspect when a review consumes its entire time budget without producing a result envelope. Before the first round, check `claude --help` for a tool-restriction capability: when the installed CLI supports `--tools`, add `--tools ""` to the review command to disable tools entirely; otherwise, when it supports a disallow list, disallow all write and execution tools and permit at most read-only repository access; when neither is supported, run unrestricted. Record which restriction was applied so escalation evidence can report it.
+
+Each attempt stages its artifacts in a fresh per-attempt directory — never an `rm`-based reset of shared paths, which some host command policies reject:
 
 ```bash
-rm -f "$REVIEW_DIR"/pr.diff "$REVIEW_DIR"/gh-diff.err \
-      "$REVIEW_DIR"/review.json "$REVIEW_DIR"/review.err \
-      "$REVIEW_DIR"/review.txt "$REVIEW_DIR"/review-jq.err
-timeout --kill-after=10 60 gh pr diff "$PR_NUMBER" \
-  > "$REVIEW_DIR/pr.diff" 2> "$REVIEW_DIR/gh-diff.err"
-GH_DIFF_STATUS=$?
-if [ "$GH_DIFF_STATUS" -ne 0 ] || [ ! -s "$REVIEW_DIR/pr.diff" ]; then
-  CLAUDE_STATUS=not-run
-else
-  timeout --kill-after=15 490 claude --print \
-    --model "$CLAUDE_REVIEW_MODEL" \
-    --output-format json \
-    "<the review prompt above, with $PR_NUMBER and $REPO expanded; the complete diff is supplied on stdin>" \
-    < "$REVIEW_DIR/pr.diff" > "$REVIEW_DIR/review.json" 2> "$REVIEW_DIR/review.err"
-  CLAUDE_STATUS=$?
+ATTEMPT_DIR=$(mktemp -d "$REVIEW_DIR/attempt.XXXXXX")
+if [ -z "$ATTEMPT_DIR" ] || [ ! -d "$ATTEMPT_DIR" ]; then
+  echo "mktemp -d failed: cannot stage reviewer attempt artifacts" >&2
+  exit 1
 fi
+# Acquire "$ATTEMPT_DIR/pr.diff" per the shared "PR diff acquisition" procedure
+# (head-SHA reuse, bounded fetch, up to 3 transport retries; record GH_DIFF_STATUS
+# and stderr in "$ATTEMPT_DIR/gh-diff.err"). Acquisition failure escalates there
+# with FAILURE_POINT=diff-fetch and never charges a reviewer attempt, so reaching
+# the claude invocation means the diff is present and non-empty.
+CLAUDE_REVIEW_TIMEOUT=${CLAUDE_REVIEW_TIMEOUT:-490}
+timeout --kill-after=15 "$CLAUDE_REVIEW_TIMEOUT" claude --print \
+  --model "$CLAUDE_REVIEW_MODEL" \
+  --output-format json \
+  <tool-restriction flags per "Diff-only review" above, when supported> \
+  "<the review prompt above, with $PR_NUMBER and $REPO expanded; the complete diff is supplied on stdin>" \
+  < "$ATTEMPT_DIR/pr.diff" > "$ATTEMPT_DIR/review.json" 2> "$ATTEMPT_DIR/review.err"
+CLAUDE_STATUS=$?
 jq -er 'select((.type == "result") and (.is_error == false))
         | .result | select(type == "string")' \
-  "$REVIEW_DIR/review.json" > "$REVIEW_DIR/review.txt" 2> "$REVIEW_DIR/review-jq.err"
+  "$ATTEMPT_DIR/review.json" > "$ATTEMPT_DIR/review.txt" 2> "$ATTEMPT_DIR/review-jq.err"
 EXTRACT_STATUS=$?
-VERDICT=$(awk 'NF {line=$0} END {print line}' "$REVIEW_DIR/review.txt" \
+VERDICT=$(awk 'NF {line=$0} END {print line}' "$ATTEMPT_DIR/review.txt" \
   | grep -E '^[[:space:]*_]*Verdict:[[:space:]*_]*(APPROVE|REQUEST_CHANGES)[[:space:]*_]*$' \
   | grep -oE 'APPROVE|REQUEST_CHANGES')
+printf 'GH_DIFF_STATUS=%s\nCLAUDE_STATUS=%s\nEXTRACT_STATUS=%s\nVERDICT=%s\n' \
+  "$GH_DIFF_STATUS" "$CLAUDE_STATUS" "$EXTRACT_STATUS" "$VERDICT" \
+  > "$ATTEMPT_DIR/status.env"
 ```
+
+The trailing `printf` persists every phase's status independently in `$ATTEMPT_DIR/status.env`. This matters because a wrapper that ends by printing or recording its captured statuses exits 0 even when inner phases failed — the wrapper's (or connector's) exit code is **never** evidence that the review succeeded. Diagnosis reads the persisted per-phase statuses, artifact byte counts, and `VERDICT`, not the wrapper exit alone.
 
 **Apply the completion gate before inspecting any status variable or artifact.** The host connector must report an exit code for the foreground Bash call. If it instead reports a `session_id` with no exit code, continue waiting on that exact session with empty connector-native stdin/wait calls. If the outer orchestration yields a `cell_id`, resume that cell with its own wait operation. Until an exit code is observed, unset `GH_DIFF_STATUS` / `CLAUDE_STATUS` / `EXTRACT_STATUS`, missing status artifacts, and empty `review.json` / `review.err` redirect targets are expected signs that the process is still running — never evidence of an inconclusive attempt. Do not read or parse the artifacts, restart the command, or charge a retry while the session is live.
 
 After the completion gate passes, interpret the result deterministically — never re-run merely to "check if it finished". A round is **conclusive** only when ALL of the following hold; a partial `gh` diff, a truncated JSON stream rescued by `jq`, or review text with no verdict must never pass as a completed review:
 
-- `GH_DIFF_STATUS` is 0 and `$REVIEW_DIR/pr.diff` is non-empty (a diff failure is a `gh` failure — `CLAUDE_STATUS` reads `not-run` so the evidence names the failing component, never Claude);
+- `GH_DIFF_STATUS` is 0 and `$ATTEMPT_DIR/pr.diff` is non-empty (guaranteed by the shared diff-acquisition procedure — a diff failure is a `gh` failure handled and escalated there, so it never reaches this interpretation and never charges a reviewer attempt);
 - `CLAUDE_STATUS` is 0;
-- `EXTRACT_STATUS` is 0 and `$REVIEW_DIR/review.txt` is non-empty;
+- `EXTRACT_STATUS` is 0 and `$ATTEMPT_DIR/review.txt` is non-empty;
 - `VERDICT` is non-empty. The verdict comes only from the review's **final nonblank line**, which the prompt demands be a dedicated `Verdict:` line (the extraction tolerates surrounding Markdown emphasis). Prose that merely mentions a verdict token, an echoed rubric, a refusal with an earlier standalone verdict, or a token embedded in another word (`DISAPPROVE`) can never pass.
 
-**Conclusive:** `$REVIEW_DIR/review.txt` is the round's review with verdict `$VERDICT`. Parse the per-severity findings and post it to the PR. **Anything else after observed connector completion — the round is inconclusive.** Before retrying, record these fields separately so a connector yield can never be mistaken for an empty Claude result:
+**Conclusive:** `$ATTEMPT_DIR/review.txt` is the round's review with verdict `$VERDICT`. Parse the per-severity findings and post it to the PR. **Anything else after observed connector completion — the round is inconclusive.** Before retrying, record these fields separately so a connector yield can never be mistaken for an empty Claude result:
 
 - connector session ID (or `none` when the call never yielded) and connector exit code;
 - attempt start and completion timestamps;
@@ -626,7 +644,15 @@ After the completion gate passes, interpret the result deterministically — nev
 - byte counts for `pr.diff`, `gh-diff.err`, `review.json`, `review.err`, `review.txt`, and `review-jq.err`, measured only after connector completion;
 - the tails of `review.err`, `gh-diff.err`, and `review-jq.err`, plus the envelope's `subtype`/`is_error` from `review.json` if it parsed.
 
-Then rerun the exact foreground command once. If the rerun is also inconclusive, do not invoke Codex or inherit the current session model. Run the shared **Escalation debug capture** flow exactly once with both attempts' complete evidence and the Claude `Code Review Cannot Proceed` body below as the path-specific PR-comment body. The shared flow applies the labels and skips to L16 with result `ESCALATED`, even if creating the related issue or document fails.
+**Only attempts that actually invoked `claude` count toward the two permitted reviewer attempts.** Diff-acquisition failures are retried and, if persistent, escalated inside the shared procedure — a failed prerequisite must never consume the sole reviewer retry when Claude was never launched.
+
+Then rerun the foreground command once in a fresh attempt directory. When the failed attempt timed out (`CLAUDE_STATUS` 124 or 137), harden the rerun for observability and success odds:
+
+- Reuse the already-verified diff under the shared procedure's head-SHA rule instead of depending on another network fetch.
+- Add CLI diagnostics when the installed version supports them — for example `--debug-file "$ATTEMPT_DIR/claude-debug.log"`, or a stream-JSON output mode with partial messages — so a second timeout leaves evidence instead of a 0-byte envelope; redact any diagnostic excerpt before it appears in a PR comment or Linear document, and keep the strict final-verdict gate unchanged.
+- Optionally raise `CLAUDE_REVIEW_TIMEOUT` (for example, double it), but only when the host execution deadline still strictly covers the raised bound plus kill grace.
+
+If the rerun is also inconclusive, do not invoke Codex or inherit the current session model. Run the shared **Escalation debug capture** flow exactly once with both attempts' complete evidence and the Claude `Code Review Cannot Proceed` body below as the path-specific PR-comment body. The shared flow applies the labels and skips to L16 with result `ESCALATED`, even if creating the related issue or document fails.
 
 **Escalation comment body (probe failure and inconclusive rounds alike).** The body must carry the captured evidence — never only a prose conclusion like "completed without producing review output", which leaves the failure undiagnosable. Before posting, truncate each stderr tail to its last 20 lines, cap the result-envelope excerpt at ~2000 characters, and redact anything credential-shaped (API keys, bearer tokens, `sk-`/`ghp_`-style strings, URLs with embedded credentials) — CLI diagnostics can leak local paths and account details, and a PR comment is public within the repo:
 
@@ -636,7 +662,9 @@ Then rerun the exact foreground command once. If the rerun is also inconclusive,
 This Codex implementation requires review by the latest Claude Opus model (`--model $CLAUDE_REVIEW_MODEL`). The reviewer cannot silently downgrade to Codex because that would be same-family self-review. Marking for human review.
 
 Evidence:
-- Failure point: <probe | review round N attempt M>
+- Failure point: <probe | diff-fetch | review round N attempt M>
+- Diff acquisition: <reused verified diff for unchanged head SHA | per-fetch-attempt statuses, redacted>
+- Tool restriction: <flags applied per "Diff-only review", or "none supported">
 - Statuses: <GH_DIFF_STATUS / CLAUDE_STATUS / EXTRACT_STATUS, or PROBE_STATUS / PROBE_PARSE; note 124 = timed out at <bound>s, 137 = SIGKILL after ignoring SIGTERM>
 - stderr tails (last 20 lines each, redacted): <from the captured stderr files, or "empty">
 - Result envelope (truncated, redacted): <subtype / is_error / result excerpt, or "unparseable">
