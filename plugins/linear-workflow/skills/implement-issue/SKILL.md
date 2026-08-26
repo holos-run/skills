@@ -1,7 +1,7 @@
 ---
 name: implement-issue
-description: v3.0.0 — Implement a Linear issue end-to-end, either as one leaf issue or as a parent orchestrating children. All implementation work — orchestrator and sub-issue workers alike — runs in the harness the user invoked; --model adjusts only the model within that harness, and only code review crosses to the opposite harness. Cross-runtime review posts findings to the PR; reviewer-output failures stop the merge and produce redacted diagnostics plus a best-effort related Linear issue and document. Use --reviewer only to override reviewer selection. Triggers when the user provides a Linear issue URL or identifier (for example PLA-287) and asks to implement, work on, fix, resolve, or execute its plan.
-version: 3.0.0
+description: v3.1.0 — Implement a Linear issue end-to-end, either as one leaf issue or as a parent orchestrating children. All implementation work — orchestrator and sub-issue workers alike — runs in the harness the user invoked; --model adjusts only the model within that harness, and only code review crosses to the opposite harness. Cross-runtime review posts findings to the PR; reviewer-output failures stop the merge and produce redacted diagnostics plus a best-effort related Linear issue and document. Every Linear and PR comment the skill posts ends with an agent-attribution footer naming the harness, model, and reasoning effort (for example `claude fable-5 high`) so colleagues know they are reading agent output, not the human account owner. Use --reviewer only to override reviewer selection. Triggers when the user provides a Linear issue URL or identifier (for example PLA-287) and asks to implement, work on, fix, resolve, or execute its plan.
+version: 3.1.0
 # Guardrail: whenever version changes, update the leading vX.Y.Z prefix in description in the same PR.
 ---
 
@@ -47,6 +47,7 @@ When this skill re-invokes itself for a sub-issue or nested parent, propagate `M
 - **PR** = GitHub pull request. Opened via `gh`.
 - The PR body must contain `Fixes <IDENTIFIER>` so Linear auto-closes the issue on merge.
 - Always send real newlines in Linear `body` / `description` values — never `\n` escape sequences.
+- Every comment this skill posts — on Linear issues and on GitHub PRs — must end with the agent-attribution footer defined in the "Agent Attribution" section, even where a comment template below does not repeat it inline.
 
 ## Worktree Conventions
 
@@ -89,6 +90,36 @@ At the start of the skill, before dispatching any implementation or review worke
 The primary runtime is the agent that performs the implementation steps in this invocation, not a CLI binary it later launches. **Never detect the runtime with `command -v codex` or `command -v claude`**: both CLIs can be installed in either host. Detect once and do not recompute inside a review subprocess, because child processes can inherit the primary host's environment markers. In particular, a native Claude host launched beneath Codex remains `claude` even if it inherited `CODEX_THREAD_ID`.
 
 Each leaf worker detects its own runtime. Because P6 always dispatches workers as sub-agents of the orchestrator's own harness, every worker's detection yields the same runtime as the orchestrator's — which is exactly what guarantees that L8's cross-runtime review pairing is adversarial for the whole tree.
+
+## Agent Attribution
+
+Colleagues reading Linear issues and GitHub PRs must be able to tell at a glance that a comment came from an AI agent operating on behalf of a human, not from the human account owner. Every comment this skill posts carries an attribution footer.
+
+Immediately after Primary Runtime Detection, resolve these once and reuse them for the whole invocation:
+
+- `AGENT_HARNESS` — the harness running this skill: `claude` when `PRIMARY_RUNTIME=claude`, `codex` when `PRIMARY_RUNTIME=codex`. When the runtime is unknown, use the native host's self-reported name if it provides one; otherwise `unknown-harness`.
+- `AGENT_MODEL` — the model slug this session is actually running (for example `fable-5`, `opus-4-6`, `solstice-alpha`). Take it from the harness's native self-identity: Claude Code sessions know their model ID; a Codex session knows its configured model slug. Use `unknown-model` when it cannot be determined — never guess a plausible slug.
+- `AGENT_EFFORT` — the reasoning-effort setting (for example `low`, `medium`, `high`, `xhigh`) when the harness exposes one for this session; omit the token entirely when unknown.
+
+Compose the signature by joining the parts with single spaces:
+
+```
+AGENT_SIGNATURE = <AGENT_HARNESS> <AGENT_MODEL>[ <AGENT_EFFORT>]
+```
+
+Examples: `claude fable-5 high`, `codex solstice-alpha high`, `claude sonnet-4-5`.
+
+**Footer requirement.** Every comment body this skill sends — Linear comments via `mcp__linear-server__save_comment`, PR comments via `gh pr comment`, and PR close messages via `gh pr close --comment` — must end with a blank line, a `---` separator line, and this line:
+
+```
+🤖 <AGENT_SIGNATURE> — automated comment posted by an AI agent on behalf of this repository's operator. Replies here reach an agent, not the human directly.
+```
+
+This applies to **every** comment template in this skill, including templates that do not repeat the footer inline. Issue descriptions, issue titles, PR bodies, and Linear documents are exempt — only comments carry the footer.
+
+Sub-agent workers dispatched in Parent Mode run this skill themselves and resolve their own signature: the harness matches the orchestrator's, but `AGENT_MODEL` may differ when `--model` is set, and each worker's footer must state the model that worker actually runs.
+
+Review-round PR comments identify two models, and both must be present: the `Code Review — Round <N>` heading names the reviewer that produced the findings (its resolved slug, for example `codex solstice-alpha` or `claude opus`), and the footer names the agent that posted the comment.
 
 ## Claude Review Model Mapping
 
@@ -203,6 +234,9 @@ Post a comment via `mcp__linear-server__save_comment`:
 Working on this issue.
 
 - Branch: feat/<identifier-lowercased>-<slug>
+
+---
+🤖 <AGENT_SIGNATURE> — automated comment posted by an AI agent on behalf of this repository's operator. Replies here reach an agent, not the human directly.
 ```
 
 Move the issue to In Progress and add the `implementing` label. Ensure the label exists for the team; create it if missing.
@@ -304,12 +338,17 @@ PR_NUMBER=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].nu
 
 ```bash
 gh pr comment $PR_NUMBER --body "$(cat <<EOF
-## Code Review — Round <N> (<reviewer: codex | claude | model name | project-configured>)
+## Code Review — Round <N> (reviewer: <resolved reviewer slug, e.g. codex $CODEX_FRONTIER_MODEL | claude $CLAUDE_REVIEW_MODEL | project-configured>)
 
 <the reviewer's full findings and verdict, verbatim>
+
+---
+🤖 <AGENT_SIGNATURE> — automated comment posted by an AI agent on behalf of this repository's operator. Replies here reach an agent, not the human directly.
 EOF
 )"
 ```
+
+The heading names the reviewer model; the footer names the posting agent per the "Agent Attribution" section. Both are required on every review-round comment.
 
 If `REVIEWER_OVERRIDE` deliberately selects the same model family as `PRIMARY_RUNTIME`, add this line below the PR comment heading for every reviewer path: `Same-family review explicitly requested via --reviewer; cross-runtime pairing was overridden.`
 
@@ -326,7 +365,7 @@ If `REVIEWER_OVERRIDE` deliberately selects the same model family as `PRIMARY_RU
 
    Apply the same publication-safety rules required by the escalation PR comment below to the entire bundle: truncate every stderr tail to its last 20 lines, cap each result-envelope excerpt at approximately 2000 characters, and redact API keys, bearer tokens, `sk-` / `ghp_`-style secrets, URLs with embedded credentials, and other credential-shaped strings. Preserve exact commands only after applying those redactions. The full PR diff is evidence only by byte count; do not embed its contents in the Linear document.
 
-2. **Post the existing path-specific PR escalation comment.** Render the caller's `Code Review Cannot Proceed` body with the compact, redacted attempt evidence that is available as `ESCALATION_COMMENT`, then post it with the shared bounded invocation:
+2. **Post the existing path-specific PR escalation comment.** Render the caller's `Code Review Cannot Proceed` body with the compact, redacted attempt evidence that is available as `ESCALATION_COMMENT`, append the agent-attribution footer per the "Agent Attribution" section, then post it with the shared bounded invocation:
 
    ```bash
    timeout --kill-after=10 60 gh pr comment "$PR_NUMBER" --body "$ESCALATION_COMMENT"
