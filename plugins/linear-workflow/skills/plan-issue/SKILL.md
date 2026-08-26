@@ -1,7 +1,7 @@
 ---
 name: plan-issue
-description: v3.0.0 — Create an implementation plan for a Linear issue. Use this skill when the user provides a Linear issue (URL or identifier like APP-123) and wants a plan broken into phases, with each phase tracked as a Linear sub-issue. Creates a NEW primary issue with the structured plan and relates it back to the original. Accepts an optional --model argument recorded in the plan's implementation instructions; otherwise implementation inherits the session-configured model. Never applies model routing labels — implementation always runs in the harness that invokes implement-issue. Triggers on phrases like "plan this issue", "plan issue for", "break this Linear issue into phases", or any request to produce a phased plan against a Linear issue.
-version: 3.0.0
+description: v3.1.0 — Create an implementation plan for a Linear issue. Use this skill when the user provides a Linear issue (URL or identifier like APP-123) and wants a plan broken into phases, with each phase tracked as a Linear sub-issue. Creates a NEW primary issue with the structured plan and relates it back to the original. Accepts an optional --model argument recorded in the plan's implementation instructions; otherwise implementation inherits the session-configured model. Never applies model routing labels — implementation always runs in the harness that invokes implement-issue. Every Linear comment the skill posts ends with an agent-attribution footer naming the harness, model, and reasoning effort (for example `claude fable-5 high`) so colleagues know they are reading agent output, not the human account owner. Triggers on phrases like "plan this issue", "plan issue for", "break this Linear issue into phases", or any request to produce a phased plan against a Linear issue.
+version: 3.1.0
 # Guardrail: whenever version changes, update the leading vX.Y.Z prefix in description in the same PR.
 ---
 
@@ -34,6 +34,33 @@ This skill operates against Linear using `mcp__linear-server__*` tools:
 - **Sub-issue** = Linear child issue (`parentId` set to the new primary issue).
 - Linear has native parent/child relationships — do not use markdown task-list parsing.
 - Always send real newlines in `body` / `description` values — never literal `\n` escape sequences.
+- Every comment this skill posts must end with the agent-attribution footer defined in the "Agent Attribution" section.
+
+## Agent Attribution
+
+Colleagues reading Linear must be able to tell at a glance that a comment came from an AI agent operating on behalf of a human, not from the human account owner. Every comment this skill posts carries an attribution footer.
+
+At the start of the skill, resolve these once and reuse them for the whole invocation:
+
+- `AGENT_HARNESS` — the harness running this skill. Ask the native host identity first: Claude Code → `claude`, Codex → `codex`. Only if identity is unavailable, fall back to environment markers (`CODEX_THREAD_ID` alone → `codex`; `CLAUDE_CODE_ENTRYPOINT` or `CLAUDECODE` without `CODEX_THREAD_ID` → `claude`); otherwise use `unknown-harness`.
+- `AGENT_MODEL` — the model slug this session is actually running (for example `fable-5`, `opus-4-6`, `solstice-alpha`), taken from the harness's native self-identity. Use `unknown-model` when it cannot be determined — never guess a plausible slug.
+- `AGENT_EFFORT` — the reasoning-effort setting (for example `low`, `medium`, `high`, `xhigh`) when the harness exposes one for this session; omit the token entirely when unknown.
+
+Compose the signature by joining the parts with single spaces:
+
+```
+AGENT_SIGNATURE = <AGENT_HARNESS> <AGENT_MODEL>[ <AGENT_EFFORT>]
+```
+
+Examples: `claude fable-5 high`, `codex solstice-alpha high`, `claude sonnet-4-5`.
+
+**Footer requirement.** Every comment body sent via `mcp__linear-server__save_comment` must end with a blank line, a `---` separator line, and this line:
+
+```
+🤖 <AGENT_SIGNATURE> — automated comment posted by an AI agent on behalf of this repository's operator. Replies here reach an agent, not the human directly.
+```
+
+Issue descriptions, issue titles, and plan documents are exempt — only comments carry the footer.
 
 ## Workflow
 
@@ -71,7 +98,14 @@ Update the original issue via `mcp__linear-server__save_issue`:
 Post a comment via `mcp__linear-server__save_comment`:
 
 - `issue: "<ORIGINAL_IDENTIFIER>"`
-- `body`: "Planning this issue."
+- `body`:
+
+```
+Planning this issue.
+
+---
+🤖 <AGENT_SIGNATURE> — automated comment posted by an AI agent on behalf of this repository's operator. Replies here reach an agent, not the human directly.
+```
 
 ### 3. Read Project Conventions
 
@@ -235,6 +269,9 @@ Post a comment on the original issue:
 
 ```
 Planning complete. Implementation tracked in <PRIMARY_IDENTIFIER>.
+
+---
+🤖 <AGENT_SIGNATURE> — automated comment posted by an AI agent on behalf of this repository's operator. Replies here reach an agent, not the human directly.
 ```
 
 Mark the original issue Done:
@@ -259,6 +296,7 @@ After all issues are created, report a summary:
 ## Key Principles
 
 - **Planning label first**: Add `planning` before exploring, so operators see the issue is owned.
+- **Agent attribution on every comment**: End every posted comment with the `🤖 <AGENT_SIGNATURE>` footer so colleagues know they are talking to an agent, not the human account owner.
 - **Infer before asking**: Try to infer acceptance criteria from the prompt. Only ask when truly ambiguous.
 - **Project-agnostic**: Read conventions from CLAUDE.md / AGENTS.md. Do not hardcode paths, build commands, or phase templates.
 - **New issue, not overwrite**: Create a new primary issue for implementation. The original issue's task was "plan this" — mark it Done.
