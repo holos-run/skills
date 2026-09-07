@@ -1,0 +1,10 @@
+{
+  "name": "simple-workflow",
+  "version": "1.0.0",
+  "description": "Tight orchestration loop for plan, implement, and review using plain markdown plan files in the repository instead of Linear. GitHub PRs ship the code; plan files track status.",
+  "author": {
+    "name": "Jeff McCune"
+  },
+  "license": "MIT",
+  "skills": "./skills/"
+}

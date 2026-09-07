@@ -31,6 +31,21 @@ Run the normal plan/implement loop:
 /linear-workflow:implement-issue APP-234
 ```
 
+## Simple Workflow (no Linear)
+
+`simple-workflow` is the same plan/implement/review loop with every Linear call
+replaced by plain markdown files in the repository's plans folder. Each plan and
+phase is a file with YAML front matter for status and labels; every status
+change is committed and pushed to `main` as it happens, and `TODO.md` in the
+plans folder lists every open item. See
+[plugins/simple-workflow/README.md](plugins/simple-workflow/README.md).
+
+```bash
+claude plugin install simple-workflow@holos-run
+/simple-workflow:plan-issue "Add login with email and password"
+/simple-workflow:implement-issue 001
+```
+
 ## Model Selection via Labels
 
 Label any Linear sub-issue to control which model implements it:
