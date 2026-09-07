@@ -4,7 +4,7 @@
     "name": "Open Infrastructure Services LLC"
   },
   "metadata": {
-    "description": "Claude Code plugins from holos-run for Linear workflow automation and holos-console implementation guidance."
+    "description": "Claude Code plugins from holos-run for Linear and file-based workflow automation and holos-console implementation guidance."
   },
   "plugins": [
     {
@@ -18,6 +18,12 @@
       "source": "./plugins/linear-sonnet",
       "description": "Sonnet-only variant of linear-workflow. Same plan and implement workflow skills, lower token usage.",
       "version": "2.2.0"
+    },
+    {
+      "name": "simple-workflow",
+      "source": "./plugins/simple-workflow",
+      "description": "linear-workflow's plan, implement, and review loop with plain markdown plan files in the repository instead of Linear.",
+      "version": "1.0.0"
     }
   ]
 }
